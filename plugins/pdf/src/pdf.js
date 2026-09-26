@@ -764,6 +764,46 @@ function drawnDiagram(doc, svg, left, top, maxWidth, maxHeight) {
  * the key comes back empty, and then what is in the answer is the only copy
  * there is. Stripping it there would answer nothing at all.
  */
+/**
+ * The HTML to lay out, from whichever of the three the caller used. Issue #495.
+ *
+ * A pad first, then a key, then the text itself - the order they cost: reading
+ * a pad here costs nothing, a key costs nothing, and text given outright has
+ * already been through the model once. A refusal names all three, because a
+ * model that passed the wrong one needs to know what the right one was.
+ */
+function pageFrom(html, scratchpad, contentKey) {
+  const named = typeof scratchpad === 'string' ? scratchpad.trim() : '';
+  if (named.length > 0) {
+    const answer = orknux.scratchpad.read(named);
+    if (answer.error !== undefined) {
+      throw new Error(`the scratchpad ${named} could not be read: ${answer.error}`);
+    }
+    const held = answer.ok?.content ?? '';
+    if (typeof held !== 'string' || held.trim().length === 0) {
+      throw new Error(`the scratchpad ${named} is empty, so there is nothing to lay out`);
+    }
+    return held;
+  }
+
+  const key = typeof contentKey === 'string' ? contentKey.trim() : '';
+  if (key.length > 0) {
+    const held = orknux.session.store.get(key);
+    if (typeof held !== 'string' || held.trim().length === 0) {
+      throw new Error(`nothing is kept under ${key} in this session`);
+    }
+    return held;
+  }
+
+  if (typeof html === 'string' && html.trim().length > 0) {
+    return html;
+  }
+  throw new Error(
+    'there is no html to lay out: pass scratchpad with the name of the pad holding the page, ' +
+      'or contentKey for a page something handed you, or html for a short one written out here',
+  );
+}
+
 function keyedOnly(made) {
   if (made.key.length === 0) {
     return made;
@@ -1204,10 +1244,32 @@ reads; the diagram is what they look at afterwards.`,
           ' The answer carries the key and not the document itself: the bytes stay on the server ' +
           'and the key names them, so pass it to slack_uploadBinary as contentKey rather than ' +
           'looking for base64 here. Where there is no session to keep a document in, the base64 ' +
-          'comes back instead, because then it is the only copy there is.',
-        params: document.params,
+          'comes back instead, because then it is the only copy there is.' +
+          ' Where the page is already in a scratchpad, pass scratchpad with its name and leave ' +
+          'html out: the page is read here rather than typed through you, which is what stops a ' +
+          'long report being cut off at your output limit. A contentKey works the same way, for ' +
+          'a page something else handed you. Reading a pad and writing it back into html is the ' +
+          'slow way and the way work gets lost.',
+        params: [
+          { name: 'html', type: 'string', required: false, default: '' },
+          { name: 'scratchpad', type: 'string', required: false, default: '' },
+          { name: 'contentKey', type: 'string', required: false, default: '' },
+          { name: 'title', type: 'string', required: false, default: '' },
+        ],
         returnType: document.returnType,
-        run: (html, title) => keyedOnly(document.run(html, title)),
+        /*
+         * The page, from wherever it already is. Issue #495.
+         *
+         * A report an agent has just written lives in a scratchpad, and reading
+         * it back to pass it in here sends the whole document through the model
+         * twice - which costs the turn and, past the output limit, arrives cut
+         * in half. The tool can read it itself; the function behind it goes on
+         * taking html, for the workflow node that has no session to read from.
+         */
+        run: (html, scratchpad, contentKey, title) => {
+          const page = pageFrom(html, scratchpad, contentKey);
+          return keyedOnly(document.run(page, title));
+        },
       }),
 
       /*
