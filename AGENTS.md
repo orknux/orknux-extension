@@ -313,6 +313,16 @@ closed — "What to do when a release is bad" earns the click and "Deploy skill"
 does not — and leave the frontmatter out, because the server writes it from the
 name and description and stating the same two facts twice is how they drift.
 
+**A skill may not name another skill.** A page that names a sibling by title is
+not a cross-reference, it is a pointer, and a model holding `skill_load` follows
+pointers: one page saying "this is the opposite of *Posting to Slack so people
+read it*" sends it to load that page, and two pages naming each other are a
+cycle a model can spend a whole turn inside. Both were written here on
+2026-09-27 and both came straight back as loops in somebody's channel. Say the
+rule in the page that needs it, in its own words, however much that repeats the
+page next door - repetition between two skills costs a paragraph, and a pointer
+costs a turn.
+
 Give a skill an `id` where anything points at it. The id is what a workflow node
 naming skills to load holds, what `skill_load` is asked for, and what a person
 writes after the workspace's command marker in a message. Say nothing and the

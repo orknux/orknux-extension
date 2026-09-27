@@ -647,8 +647,7 @@ change. A vague prompt comes back as a vague diff an hour later.
 its sessions. **Do not poll it in a loop.** Check it when there is a reason
 to, and where the reason is that the work is not finished yet, wait properly:
 \`finish_answer\` takes \`wake_after_ms\`, which parks the step and comes back
-to it rather than burning rounds. *Getting a pull request build green* is that
-done end to end.
+to it rather than burning rounds.
 
 \`github_agentTaskLogs\` takes a session id and answers the agent's own account
 of what it read and decided. Read that before concluding the agent did
@@ -714,9 +713,8 @@ spent a round learning that. Where no waits are left the argument is not offered
 at all — then finish, and say where things stand.
 
 Do not hold the turn open instead, do not poll \`github_buildStatus\` over and
-over inside one turn, and do not try to pass the time by thinking. The Copilot
-skill's "do not poll it in a loop" still holds: this is the tool it was pointing
-at.
+over inside one turn, and do not try to pass the time by thinking. Polling a
+task in a tight loop is the same mistake and has the same answer.
 
 ## The note is your only memory
 

@@ -1767,12 +1767,12 @@ Your answer goes to the **channel**, not into the thread you were called from.
 That is the whole of this skill: one message in the same channel, which becomes
 the top of a new thread, and then the turn ends.
 
-It is the opposite of what *Posting to Slack so people read it* teaches, and
-deliberately so. That skill is right by default. This one is loaded when the
-answer is a topic rather than a reply — a report somebody will refer back to, a
-run's result, something several people will have something to say about — and a
-topic buried forty replies down somebody else's thread is a topic nobody finds
-twice.
+Replying inside the thread you were called from is the ordinary thing to do and
+is usually right. This is the exception, and it is loaded when somebody wants
+it: when the answer is a topic rather than a reply — a report people will refer
+back to, a run's result, something several of them will have something to say
+about — because a topic buried forty replies down somebody else's thread is a
+topic nobody finds twice.
 
 ## The call
 
