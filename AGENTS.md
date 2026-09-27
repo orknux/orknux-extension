@@ -256,13 +256,18 @@ words it already had. That is what makes it safe to run twice, and it is why a
 listing that has no notes yet gets them at the next release rather than waiting
 for its own next bump.
 
-`plugin.json` may also carry a `notes` string, and **the descriptor wins over
-the field a publish sends**. No manifest here writes one, and
-`manifests.test.js` fails if any does: a `notes` typed into a manifest would
-silently beat the commit at every release until somebody remembered to edit it
-again, which is the second copy this whole arrangement exists to avoid. The
-field is for a plugin published by hand, from somewhere with no build to derive
-anything. This is not that.
+**A descriptor cannot carry them, and that is deliberate.** `plugin.json` used
+to take a `notes` string, and it beat the field a publish sent; the marketplace
+took the field out of the schema and now ignores the key. The reasoning is worth
+keeping, because it is the same reasoning this section rests on: everything else
+in a descriptor is what the plugin *is*, the same wherever the zip is opened,
+while a release note is what one upload was *for*. Leaving it in the descriptor
+meant a commit to say what the last commit did, and then another publish to
+carry it.
+
+So `manifests.test.js` still fails if a manifest writes `notes`, for a changed
+reason: not that it would quietly win, but that it would quietly do nothing
+while looking like the place the sentence lives.
 
 The cap is 4000 characters. A commit body longer than that is cut on a
 paragraph and says at the end that it was — prose that stops mid-sentence reads

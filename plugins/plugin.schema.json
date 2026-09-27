@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://orknux.ai/marketplace/plugin.schema.json",
   "title": "A plugin's descriptor",
-  "description": "What a plugin published to the Orknux marketplace says about itself.\n\nA plugin is published as a .js file, as a .zip of that file and the libraries beside it, or by giving the address of such a zip on GitHub. A zip may carry this descriptor at its top level, and it must be named `plugin.json`. One name and not several: an archive carrying two spellings of the same thing would leave which one won to a line of code rather than to anything its author can see.\n\n**The descriptor wins over the publish form.** The form fills what the descriptor does not say, and not the other way round -- which matters most when editing, because the edit form arrives prefilled with the listing as it stands, so a form that beat the descriptor would mean a new zip could never change a version. To change what a listing says, change this file.\n\nIt is the same shape orknux-extension gives each of its plugins, one `plugin.json` per folder, so a plugin's folder zipped straight out of that repository needs nothing typed at all.\n\nThis is prose and nothing more. The marketplace does not read what a plugin will ask to be allowed and does not vouch for it: permissions, capabilities and the libraries it ships with are discovered by the installing server from the code itself, in its sandbox, at the moment somebody accepts them - and so is what it offers, its functions, tools, skills, types and the workflow actions an Action node can be pointed at. The one claim checked here is `key`, because a listing keyed differently from what the code answers is a listing that installs as something else.",
+  "description": "What a plugin published to the Orknux marketplace says about itself.\n\nA plugin is published as a .js file, as a .zip of that file and the libraries beside it, or by giving the address of such a zip on GitHub. A zip may carry this descriptor at its top level, and it must be named `plugin.json`. One name and not several: an archive carrying two spellings of the same thing would leave which one won to a line of code rather than to anything its author can see.\n\n**The descriptor wins over the publish form.** The form fills what the descriptor does not say, and not the other way round -- which matters most when editing, because the edit form arrives prefilled with the listing as it stands, so a form that beat the descriptor would mean a new zip could never change a version. To change what a listing says, change this file.\n\nIt is the same shape orknux-extension gives each of its plugins, one `plugin.json` per folder, so a plugin's folder zipped straight out of that repository needs nothing typed at all.\n\nThis is prose and nothing more. The marketplace does not read what a plugin will ask to be allowed and does not vouch for it: permissions, capabilities and the libraries it ships with are discovered by the installing server from the code itself, in its sandbox, at the moment somebody accepts them -- and so is what it offers, its functions, tools, skills, types and the workflow actions an Action node can be pointed at. The one claim checked here is `key`, because a listing keyed differently from what the code answers is a listing that installs as something else.",
   "type": "object",
   "required": [
     "key",
@@ -34,11 +34,6 @@
       "minLength": 1,
       "maxLength": 32,
       "description": "The offering's own string. The marketplace neither parses nor compares these -- a server that wants to say 'update available' compares against what it recorded at install.\n\n**A version is a release.** Publishing a key that already exists replaces its listing, keeping its reviews and its download count, and records the version in that plugin's history. Republishing the same number does not add a second entry: it leaves the listing's place in 'newest first' alone, so correcting a typo in the summary is not an announcement. Where the bytes move under a number that did not, the history says so -- that is a plugin edited without being renumbered, and it is worth avoiding.\n\nThe ten newest releases keep their files, so somebody can take the version they had rather than only the current one. Older releases stay in the history without their bytes."
-    },
-    "notes": {
-      "type": "string",
-      "maxLength": 4000,
-      "description": "What changed in this version, as markdown -- your release notes.\n\nKept with the version rather than with the plugin, so it stays true once the next one is out. Write about this release only; the marketplace keeps the ones you wrote before and shows them together on a changelog tab.\n\nOptional. A version nobody wrote about is simply not listed there."
     },
     "author": {
       "type": "string",
@@ -80,7 +75,6 @@
       "name": "Greeter",
       "summary": "Says hello, and says it in the language the workflow asked for.",
       "version": "1.0.0",
-      "notes": "Says hello in Welsh, and stops saying it twice.",
       "author": "Somebody",
       "tags": [
         "chat",

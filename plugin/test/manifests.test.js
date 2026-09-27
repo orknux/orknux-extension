@@ -90,19 +90,21 @@ for (const name of shipped) {
     /*
      * No manifest here writes `notes`.
      *
-     * The schema has the field, and a descriptor beats the one the publish
-     * sends beside the zip - so a `notes` typed in here would silently win
-     * over the commit the workflow derives them from, and keep winning at
-     * every release until somebody edited it again. That is the one copy of
-     * the sentence this repository has, and it is in the history.
+     * The field is gone from the descriptor schema: release notes come with
+     * the publish - the field beside the zip on /api/plugins, which this
+     * repository's workflow fills from the commit that set the version - and
+     * a `notes` key left in a descriptor is now ignored rather than used.
      *
-     * A plugin published from somewhere without a build is exactly who the
-     * field is for. This is not that.
+     * So this no longer guards against a manifest quietly beating the commit;
+     * it guards against a line that looks like it does something and does
+     * not. A note typed here would go out on nothing, and the release it was
+     * written for would carry the commit's words instead - which is the worse
+     * failure of the two, because it looks like it worked.
      */
     assert.equal(
       manifest.notes,
       undefined,
-      `${name} writes its own notes, which would beat the ones the publish sends`,
+      `${name} writes its own notes, which the marketplace no longer reads`,
     );
 
     /*
