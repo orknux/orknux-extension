@@ -2934,6 +2934,24 @@ it notifies nobody else.`,
               );
             }
             said = held;
+
+            /*
+             * A key holding base64, which is how the server keeps anything it
+             * drew or laid out. Uploaded as it stood, a PDF reached Slack as a
+             * file of base64 text - the model had picked this tool for a
+             * report.pdf - and an SVG drawn by charts_render, kept as base64
+             * since the server stopped answering the markup, would have gone
+             * the same way. Markup is decoded and sent as text; anything else
+             * is bytes, and goes up as bytes.
+             */
+            if (said.length >= 64 && /^[A-Za-z0-9+/=\s]+$/.test(said)) {
+              const decoded = orknux.encoding.decodeBase64(said);
+              if (typeof decoded.text === 'string' && /^\s*</.test(decoded.text)) {
+                said = decoded.text;
+              } else {
+                return uploadedBytes(this.settings, filename, held, channel, comment, threadTs);
+              }
+            }
           }
 
           return uploadedText(this.settings, filename, said, channel, comment, threadTs);
