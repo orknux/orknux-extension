@@ -1427,10 +1427,12 @@ arrives with the asterisks showing, \`[text](url)\` as literal brackets,
 \`# Heading\` as a hash and a space. You cannot see the message afterwards, so
 nothing tells you it happened.
 
-**Write mrkdwn. Every time, in everything you write for Slack** - the answer
-you are composing right now included. Most replies reach a channel exactly as
-you wrote them, with nothing in between to tidy them up, so the only thing that
-works is having written it right:
+**Write mrkdwn** in everything you write for Slack - the answer you are
+composing right now included - *unless something between you and the channel
+converts for you*. Where your own instructions say a converter runs on the way
+out, they are right and this page is not: write what they ask for and let it do
+its job. Where nothing says so, assume nothing does, because a reply usually
+reaches a channel exactly as you wrote it:
 
 | you want | write | not |
 |---|---|---|
