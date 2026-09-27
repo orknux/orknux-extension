@@ -6,8 +6,8 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](package.json)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 
-Nine production plugins — Slack, GitHub, Jira, Confluence, Jenkins, Prometheus,
-Teams, web search and a todo list — with the library and CLI to write your own.
+Seven production plugins — Slack, GitHub, Jira, Confluence, Jenkins, Prometheus
+and Teams — with the library and CLI to write your own.
 
 Extending [orknux-server](https://github.com/michjak-szymanski/orknux-server):
 the library you write a plugin against, and the tool that turns it into the one
@@ -81,19 +81,6 @@ Prometheus knows and executes PromQL against it, so a condition can ask what the
 running system is doing.
 
     https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/prometheus/prometheus.js
-
-**[web](plugins/web/web.js)** searches the web — through Tavily or Brave,
-whichever the workspace configures — and answers title, url and a readable
-snippet per result, so a model can look something up rather than answer from
-memory.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/web/web.js
-
-**[todo](plugins/todo/todo.js)** gives an agent a todo list for the length of one
-conversation, so a request too complex to hold in one step is split, worked and
-checked off. It asks the platform for nothing at all.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/todo/todo.js
 
 Each folder holds the plugin, its `plugin.json` marketplace manifest, the
 `README.md` that manifest names and the two icons — one file each, as the

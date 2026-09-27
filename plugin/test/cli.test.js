@@ -54,17 +54,17 @@ test('the report names the workflow actions a plugin offers, label first', () =>
 });
 
 test('the report names the skills a plugin brings, and what each is for', () => {
-  const report = checked(shipped('todo'));
+  const report = checked(shipped('github'));
 
   assert.match(report, /It teaches:/);
-  assert.match(report, /Planning work before starting it/);
+  assert.match(report, /Reviewing a pull request/);
   /* The description is the line an agent chooses from, so it earns a line here too. */
-  assert.match(report, /When a request is too big to hold in your head/);
+  assert.match(report, /How to read a PR properly before saying anything about it/);
   /*
    * The content is not printed. A skill runs to sixty-four thousand
    * characters and this is a report — the size stands in for it.
    */
-  assert.doesNotMatch(report, /## When to write one/);
+  assert.doesNotMatch(report, /## Read the whole thing first/);
 });
 
 test('the report shows the id of a skill that pinned one', () => {
@@ -153,7 +153,31 @@ test('a plugin that declares none of them says nothing about them', () => {
 });
 
 test('the report says which values a parameter takes, where it names them', () => {
-  const report = checked(shipped('web'));
+  /*
+   * Written rather than picked: the plugin that named a set of values - `web`,
+   * and its choice of search backend - left with the rest of them, and every
+   * parameter shipped here today is a token, a url or a connection.
+   */
+  const where = mkdtempSync(join(tmpdir(), 'chosen-'));
+  const file = join(where, 'chosen.js');
+  writeFileSync(
+    file,
+    `export default class Chosen extends OrknuxPlugin {
+       id() { return 'chosen'; }
+       apiVersion() { return 1; }
+       parameters() {
+         return [
+           { name: 'backend', type: 'string', description: 'Which one.', options: ['tavily', 'brave'] },
+           { name: 'apiKey', type: 'string', description: 'Its key.', secret: true },
+         ];
+       }
+       functions() {
+         return [new OrknuxFunction({ name: 'ping', description: 'x', returnType: 'boolean', run: () => true })];
+       }
+     }`,
+  );
+
+  const report = checked(file);
 
   /* The difference between a text box and a list nobody can mistype. */
   assert.match(report, /backend: string — one of tavily, brave/);

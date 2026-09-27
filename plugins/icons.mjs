@@ -38,9 +38,10 @@
  * `teams` wears the Microsoft mark, because no Teams-specific glyph is
  * published.
  *
- * The two with no mark to borrow — `todo` and `web` — are drawn here rather
- * than hand-written beside their plugins, so that every icon in the repository
- * comes out of one file and every one of them has both variants.
+ * Every plugin left wears a real mark, so nothing is hand-drawn here now — but
+ * the table for it stays, because a plugin fronting no service belongs in this
+ * file too, so that every icon in the repository comes out of one place and
+ * every one of them has both variants.
  *
  *     docker compose run --rm dev npm run build:icons --workspace @orknux/plugins
  */
@@ -77,26 +78,14 @@ const BRANDED = [
 const TITLES = { slack: 'Slack', microsoft: 'Microsoft' };
 
 /**
- * The two with nothing to borrow, drawn as strokes rather than filled paths —
- * which is why they carry their weight and caps with them.
+ * The ones with nothing to borrow, drawn as strokes rather than filled paths —
+ * which is why they would carry their weight and caps with them.
+ *
+ * Empty today: every plugin left fronts a service with a mark. The loop below
+ * stays because the next plugin without one belongs here rather than having a
+ * hand-written file beside it, which is how an icon ends up with one variant.
  */
-const DRAWN = [
-  {
-    plugin: 'todo',
-    title: 'A list with its first items checked off',
-    paths: ['m3.5 7.5 2 2 3.5-4', 'm3.5 17 2 2 3.5-4', 'M13 7.5h7.5', 'M13 17h7.5'],
-  },
-  {
-    plugin: 'web',
-    title: 'A globe under a lens',
-    paths: [
-      'M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Z',
-      'M10.5 4a10 6.5 0 0 1 0 13 10 6.5 0 0 1 0-13Z',
-      'M4 10.5h13',
-      'm15.2 15.2 5.3 5.3',
-    ],
-  },
-];
+const DRAWN = [];
 
 /** One mark, however its collection spells one. */
 function markOf({ from, icon }) {

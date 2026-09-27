@@ -206,8 +206,10 @@ from those brand portals under those companies' terms and drop them in over the
 file; the manifest already points at `icon.svg`. `teams` wears the Microsoft
 mark because no Teams-specific glyph is published.
 
-`http`, `todo` and `web` front no service with a mark to borrow, so their
-glyphs are drawn in `icons.mjs` rather than taken from a collection.
+Every plugin here fronts a service with a mark of its own today. A plugin that
+does not has its glyph drawn in `icons.mjs` beside the rest rather than
+hand-written beside itself, which is how an icon ends up with one variant
+instead of two.
 
 **Every plugin ships two icons, and that is not decoration.** `icon.svg` is
 the dark glyph for a light listing — what the manifest names — and
