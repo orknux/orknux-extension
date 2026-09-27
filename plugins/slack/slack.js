@@ -2222,7 +2222,8 @@ it notifies nobody else.`,
         description:
           read.description +
           ' A file that is not text answers the key and an empty base64: the bytes stay on the ' +
-          'server, and that key is what uploadBinary takes. Text still answers its content, ' +
+          'server, and that key is what upload takes. To look at a picture - a screenshot somebody ' +
+          'attached - pass its key to picture_view. Text still answers its content, ' +
           'because reading it is the point.',
         params: read.params,
         returnType: read.returnType,
