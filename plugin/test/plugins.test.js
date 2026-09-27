@@ -517,6 +517,22 @@ test('the slack plugin declares what the server would accept', async () => {
       assert.deepEqual(declared.params, behind.params, 'taking the same arguments');
       continue;
     }
+    /*
+     * And upload: the agents' takes a contentKey and nothing else, and the
+     * server says whether that key holds text or bytes. The function keeps
+     * content, for the workflow node with no session to keep a key in.
+     */
+    if (declared.name === 'upload') {
+      assert.equal(declared.proxyOf, null, "the agents' upload is its own tool");
+      assert.deepEqual(
+        declared.params.map((one) => one.name),
+        ['channel', 'filename', 'contentKey', 'comment', 'threadTs'],
+        'taking a key and no content',
+      );
+      const behind = inspected.functions.find((one) => one.name === 'upload');
+      assert.ok(behind.params.some((one) => one.name === 'content'), 'while the function keeps content');
+      continue;
+    }
     if (declared.name === 'readAttachment') {
       assert.equal(declared.proxyOf, null, "the agents' readAttachment is its own tool");
       const behind = inspected.functions.find((one) => one.name === 'readAttachment');
@@ -2700,6 +2716,10 @@ test('a slack upload without a bot token is a thrown sentence, not a request', a
   );
   /* And a remote file that has no url is refused before any of that. */
   assert.throws(() => remote.run('C1', 'not a url', '', ''), /needs the http\(s\) url/);
+
+  /* The agents' upload takes a key and nothing else, and says so rather than uploading nothing. */
+  const uploadTool = new Slack().tools().find((one) => one.name === 'upload');
+  assert.throws(() => uploadTool.run('C1', 'report.pdf', '', '', ''), /upload takes a contentKey/);
 
   const binary = functions.find((one) => one.name === 'uploadBinary');
   assert.throws(() => binary.run('C1', 'a.pdf', 'JVBERi0=', '', ''), /botToken parameter is not set/);

@@ -172,14 +172,18 @@ function keyFor(text) {
  * What one attachment answers, with what it read kept under a key.
  *
  * Both halves of the answer are here because both can be handed straight on:
- * text to `upload` as its contentKey, bytes to `uploadBinary` as the only
- * thing that one takes. Reading a PDF out of a thread and putting it in
+ * text or bytes to `upload` as its contentKey, with what it is recorded
+ * beside it so the upload does not have to guess. Reading a PDF out of a thread and putting it in
  * another channel should not mean either of us typing it out.
  */
 function attachmentRead(described, mimetype, size, content, base64) {
   const held = typeof content === 'string' ? content : base64;
   const key = keyFor(held);
-  const kept = orknux.session.store.put(key, held);
+  // What it is, said with it: an older server takes the value and ignores the rest.
+  const kept = orknux.session.store.put(key, held, {
+    contentType: typeof mimetype === 'string' && mimetype.length > 0 ? mimetype : null,
+    binary: typeof content !== 'string',
+  });
 
   return {
     name: at(described, 'name'),
@@ -273,6 +277,9 @@ function putOrThrow(put) {
  * there, then complete - which is also where sharing to a channel and saying
  * something about it happen.
  */
+/** Base64 as a validator reads it: whole quads, padding only at the end. */
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 function uploadedText(settings, filename, content, channel, comment, threadTs) {
   if (typeof filename !== 'string' || filename.length === 0) {
     throw new Error('an upload needs a filename');
@@ -1386,7 +1393,7 @@ export default class Slack extends OrknuxPlugin {
             kind: 'string',
             description:
               'Where what was read is kept for the rest of this session. Hand it straight on - ' +
-              'to uploadBinary as contentKey for a file, to upload as contentKey for text - ' +
+              'to upload as contentKey, text or a file alike - ' +
               'rather than copying the content out. Empty where there was no session to keep it ' +
               'in.',
           },
@@ -1586,8 +1593,8 @@ structure of its own (headings, a table, sections), is already a file.
 
 | what you made | send | and the reader gets |
 |---|---|---|
-| a log, a CSV, JSON, a query, a config, source | \`slack_upload\`, extension to match | a snippet — the first lines in the message, the rest a click away |
-| markdown — notes, a summary, a README | \`slack_upload\` with \`.md\` | the same snippet, readable where it lands |
+| a log, a CSV, JSON, a query, a config, source | \`slack_upload\` with its key, extension to match | a snippet — the first lines in the message, the rest a click away |
+| markdown — notes, a summary, a README | \`slack_upload\` with its key and \`.md\` | the same snippet, readable where it lands |
 | something long meant to be *read* | \`pdf_fromHtml\`, then \`slack_uploadBinary\` with \`.pdf\` | a preview, page by page, in the message |
 | an HTML document | read the next section first | the *markup*, as a snippet |
 | a picture or a diagram | \`slack_uploadBinary\` with \`.png\` | the picture itself |
@@ -1665,8 +1672,10 @@ dozen characters and what it names never leaves the server.
 
 ## A file belongs in the channel, not in an artifact
 
-**Upload it here.** \`slack_upload\` for text, \`slack_uploadBinary\` for a
-picture or a PDF, both taking the \`key\` its maker answered.
+**Upload it here.** \`slack_upload\` takes any file - text, a picture, a PDF,
+a zip - by the \`key\` its maker answered, and the server says which it is.
+Text you wrote yourself goes in a scratchpad first: \`scratchpad_keep\` answers
+its key. \`slack_uploadBinary\` does the same for bytes.
 
 \`save_artifact\` keeps a file on the orknux side. That is the right place for
 something a later step of the same run reads, and the wrong place for anything
@@ -2035,8 +2044,9 @@ it notifies nobody else.`,
           'and the whole call is rejected before anything runs.' +
           ' text is a message, not a document. Where what you are about to put in it is an HTML ' +
           'page, a report, a log, a table of forty rows or anything else with a structure of its ' +
-          'own, that goes up as a file instead: slack_upload for text of any kind (.md, .csv, ' +
-          '.json, .html, source), or pdf_fromHtml and then slack_uploadBinary for something long ' +
+          'own, that goes up as a file instead: write it in a scratchpad and slack_upload the key ' +
+          'scratchpad_keep answers (.md, .csv, .json, .html, source), or pdf_fromHtml and then ' +
+          'slack_upload its key for something long ' +
           'meant to be read, which is the one form Slack previews page by page. text is then the ' +
           'two lines saying what the file is and what it concludes. A document typed in here is ' +
           'collapsed behind a Show more with every tag showing and its underscores read as ' +
@@ -2061,7 +2071,79 @@ it notifies nobody else.`,
       new OrknuxFunctionTool({ function: 'react' }),
       new OrknuxFunctionTool({ function: 'search' }),
       new OrknuxFunctionTool({ function: 'findRecent' }),
-      new OrknuxFunctionTool({ function: 'upload' }),
+      /*
+       * The model's upload takes a key and nothing else; the function a
+       * workflow calls keeps content, because a workflow has no session to
+       * keep a key in. The server says what a key holds - text or bytes - so
+       * one tool uploads either, and the wrong-tool mistake cannot be made.
+       */
+      new OrknuxTool({
+        name: 'upload',
+        description:
+          'Uploads a file to Slack that the workspace hosts, and shares it to a channel with a message - ' +
+          'any file a tool made or kept: a PDF, a picture, a zip, an SVG, a page, a CSV. Takes the file by ' +
+          'its contentKey only, the key the tool that made it answered beside it; for text you wrote ' +
+          'yourself, keep it in a scratchpad and pass the key scratchpad_keep answers. The server says ' +
+          'whether a key holds text or bytes, so either goes up as what it is. Pass the channel id (not a ' +
+          '#name), a filename whose extension says what the file is (report.pdf, data.csv), what the ' +
+          'sharing message should say, and a threadTs to share inside a thread - ' +
+          'empty for the channel itself. Pass an empty channel to only upload: the answered permalink ' +
+          'then goes in a later post\'s attachments. Slack hosts what it is given but draws only pictures ' +
+          'in a message - an SVG arrives as a file card, so upload a PNG where somebody should see it. ' +
+          'This call posts a message - the comment is its text. Your own answer is posted to the same conversation as well, by the run rather than by you, so whatever you say after this call arrives as a SECOND message. Caption the file in the comment - that is your message to them, and it is sent the moment this call returns. Then END THE TURN WITH finish_answer, which stops your answer going out after it as a second message. Its own answer argument is for a later step of the workflow rather than for the reader, so leave it out unless something downstream needs it. Write a real answer instead where finish_answer is not among your tools, or where you have something the comment did not say - what to look at, what you could not do, what you would do next. Never write that you have nothing to add, and never answer with nothing at all: an empty answer is read as a failed turn and does the work again, which is how a channel ends up with the same picture twice. ' +
+          'Answers the file\'s id and permalink. Needs the botToken parameter.',
+        params: [
+          { name: 'channel', type: 'string' },
+          { name: 'filename', type: 'string' },
+          { name: 'contentKey', type: 'string' },
+          { name: 'comment', type: 'string' },
+          { name: 'threadTs', type: 'string' },
+        ],
+        returnType: 'HostedFile',
+        run: (channel, filename, contentKey, comment, threadTs) => {
+          /*
+           * A key, and nothing else. The content parameter went because a
+           * tool that takes either text or a key is a tool a model uses the
+           * wrong way: typed content is cut off at its output limit, and a
+           * binary key sent as text reached Slack as base64. The key is a dozen
+           * characters and what it names never leaves the server.
+           */
+          if (typeof contentKey !== 'string' || contentKey.length === 0) {
+            throw new Error(
+              'upload takes a contentKey: make the file with a tool and pass the key it answered, or ' +
+                'write the text into a scratchpad and pass the key scratchpad_keep answers.',
+            );
+          }
+          const held = orknux.session.store.get(contentKey);
+          if (typeof held !== 'string' || held.length === 0) {
+            throw new Error(
+              `nothing is kept under ${contentKey} in this session: make the file again and pass ` +
+                'the key that answer carried. A key is only good for the session it was made in.',
+            );
+          }
+
+          /*
+           * The server says what the key holds. Where it says nothing - a
+           * server from before it kept kinds, or a key put without one - the
+           * value is read the old way: strict base64 is bytes, unless it
+           * decodes to markup, which is text.
+           */
+          const kind = orknux.session.store.kind(contentKey);
+          if (kind !== null) {
+            return kind.binary
+              ? uploadedBytes(this.settings, filename, held, channel, comment, threadTs)
+              : uploadedText(this.settings, filename, held, channel, comment, threadTs);
+          }
+          if (held.length >= 64 && STRICT_BASE64.test(held)) {
+            const decoded = orknux.encoding.decodeBase64(held);
+            if (typeof decoded.text === 'string' && /^\s*</.test(decoded.text)) {
+              return uploadedText(this.settings, filename, decoded.text, channel, comment, threadTs);
+            }
+            return uploadedBytes(this.settings, filename, held, channel, comment, threadTs);
+          }
+          return uploadedText(this.settings, filename, held, channel, comment, threadTs);
+        },
+      }),
       /*
        * The one tool here that is not its function.
        *
@@ -2092,8 +2174,8 @@ it notifies nobody else.`,
           'are (report.pdf, chart.png), the channel id, what the sharing message should say, and ' +
           'This call posts a message - the comment is its text. Your own answer is posted to the same conversation as well, by the run rather than by you, so whatever you say after this call arrives as a SECOND message. Caption the file in the comment - that is your message to them, and it is sent the moment this call returns. Then END THE TURN WITH finish_answer, which stops your answer going out after it as a second message. Its own answer argument is for a later step of the workflow rather than for the reader, so leave it out unless something downstream needs it. Write a real answer instead where finish_answer is not among your tools, or where you have something the comment did not say - what to look at, what you could not do, what you would do next. Never write that you have nothing to add, and never answer with nothing at all: an empty answer is read as a failed turn and does the work again, which is how a channel ends up with the same picture twice. ' +
           'a threadTs - or an empty channel to only upload, whose permalink then goes in a later ' +
-          'post\'s attachments. Text is not bytes: an SVG, a CSV, JSON, markdown or any source ' +
-          'you could read goes to upload instead, as it stands. Answers the file\'s id and ' +
+          'post\'s attachments. upload takes the same keys, text or bytes, and is the one to reach ' +
+          'for. Answers the file\'s id and ' +
           'permalink. Needs the botToken parameter.',
         params: [
           { name: 'channel', type: 'string' },
@@ -2973,8 +3055,8 @@ it notifies nobody else.`,
           'pass base64 directly when the bytes came from somewhere that answered no key. Either ' +
           'way you must pass a filename whose extension says what the bytes are (report.pdf, ' +
           'chart.png), the channel id, what the sharing message should say, and a threadTs - or an ' +
-          'empty channel to only upload. For bytes only: an SVG, a CSV, JSON, markdown or any ' +
-          'source you could read goes to upload instead, as it stands. Answers the file\'s id and ' +
+          'empty channel to only upload. upload takes the same keys, text or bytes, and is the one ' +
+          'to reach for. Answers the file\'s id and ' +
           'permalink. Needs the botToken parameter.',
         params: [
           { name: 'channel', type: 'string' },

@@ -494,6 +494,7 @@ function ungrantedHelpers(): OrknuxHelpers {
           error: 'there is no session store here: only a call made inside an AI session carries one',
         }),
         get: (): null => null,
+        kind: (): null => null,
       },
     },
     /*

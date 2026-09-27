@@ -813,6 +813,12 @@ export type OrknuxBinaryResponse =
       contentType?: undefined;
     };
 
+/**
+ * What a stored value is. `binary` says how it is kept: true, the value is a
+ * string of base64 bytes; false, it is the thing itself.
+ */
+export type OrknuxStoredKind = { contentType: string | null; binary: boolean };
+
 /** What `orknux.session.store.put` answered: stored, or refused in a sentence. */
 export type OrknuxStorePut = { ok: true; error?: undefined } | { error: string; ok?: undefined };
 
@@ -1135,10 +1141,18 @@ export interface OrknuxHelpers {
        * makes the trip as JSON, so what comes back out is a copy — and
        * anything JSON cannot say (a function, undefined) does not survive.
        */
-      put(key: string, value: unknown): OrknuxStorePut;
+      put(key: string, value: unknown, kind?: OrknuxStoredKind): OrknuxStorePut;
 
       /** What the key holds, parsed, or null where nothing does. */
       get(key: string): unknown;
+
+      /**
+       * What the key was recorded as holding - its type, and whether the
+       * value is base64 bytes - or null where nothing was said: an older
+       * server, or a key put without a kind. Read it rather than guessing
+       * from the value; guessing is how a PDF reached Slack as base64 text.
+       */
+      kind(key: string): OrknuxStoredKind | null;
     };
   };
 
