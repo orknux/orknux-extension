@@ -1405,71 +1405,137 @@ export default class Slack extends OrknuxPlugin {
     return [
       new OrknuxSkill({
         /*
-         * The last step is the important one, and it was missing.
-         *
-         * This page read as preconditions - write it this way, put it
-         * there, look this up, read the thread first - with no step saying
-         * to answer and stop. A model that had discharged them went looking
-         * for the next one: skill_list, memory_search, another skill, and
-         * round again. The workspace that hit it found the cure by
-         * accident - adding ::tl-dr, whose first line is "answer first" -
-         * and the pages here that never derailed anything all name the
-         * answer in their objective. So this one does now: answer, in the
-         * thread, in one message, then stop, with the conditional parts
-         * moved below where they cannot read as a queue.
-         *
          * The id is unchanged, and has to be: a workspace marks this one
-         * Always and people type the command.
+         * Always and people type the command. What changed is its weight -
+         * sixteen kilobytes of it went into one model's context in one
+         * call, and the two halves that are not about writing a message are
+         * their own pages now.
          */
         id: 'posting-to-slack-so-people-read-it',
         name: 'Posting to Slack so people read it',
-        description: 'How the answer is written, and where it goes.',
+        description: 'How a message is written, and where the reply goes.',
         content: `# Posting to Slack so people read it
 
-## Objective
+A channel is somebody else's interface. Everything below is about not making
+it worse.
 
-**Answer the person, in one message, in the thread they asked in.** This page
-is how that message is written. It is not a list of things to do before
-answering: the answer is the work, and everything here is about the shape of
-it.
+## Markdown is not what Slack reads
 
-## Steps
+Slack reads *mrkdwn*, which resembles markdown closely enough to be mistaken
+for it. Write markdown and the reader sees your punctuation: \`**bold**\`
+arrives with the asterisks showing, \`[text](url)\` as literal brackets,
+\`# Heading\` as a hash and a space. You cannot see the message afterwards, so
+nothing tells you it happened.
 
-1. **Write the answer.** First sentence answers the question; anything else
-   explains it. One message, and nothing in it that nobody asked for.
-2. **Write mrkdwn, not markdown** - unless your own instructions say something
-   converts for you on the way out, in which case they are right and this is
-   not. Slack's spelling: one asterisk for bold, one underscore for italic, one
-   tilde for struck through. Two of any of them is markdown, and the reader
-   sees the punctuation. A link is the url and the text inside angle brackets,
-   separated by a pipe. A bullet is a bullet character or a hyphen, never an
-   asterisk. There are no headings and no tables at all: a heading is a bold
-   line on its own, and a table is a short list.
-3. **Put it in the thread** by passing the \`threadTs\` you were given. A
-   reply posted to the channel is a new conversation in front of everybody.
-   Post to the channel itself only when starting something genuinely new.
-4. **Never write a mention by hand.** An id you invented pings nobody or pings
-   a stranger. Where the answer names somebody, call \`slack_mention\` and
-   use what it answers, exactly. Going the other way, \`slack_whoIs\` turns
-   an id somebody else wrote into a name.
-5. **Then stop.** One message answers one message. \`slack_post\` converts
-   what you hand it, so text going through that call is safe either way; your
-   own reply passes through nothing, which is the case that catches people.
+**Write mrkdwn** in everything you write for Slack - the answer you are
+composing right now included - *unless something between you and the channel
+converts for you*. Where your own instructions say a converter runs on the way
+out, they are right and this page is not: write what they ask for and let it do
+its job. Where nothing says so, assume nothing does, because a reply usually
+reaches a channel exactly as you wrote it:
 
-## Two things that change the answer, and nothing else does
+| you want | write | not |
+|---|---|---|
+| bold | \`*bold*\` | \`**bold**\` |
+| italic | \`_italic_\` | \`*italic*\` |
+| strikethrough | \`~struck~\` | \`~~struck~~\` |
+| a link | \`<https://x.com|text>\` | \`[text](https://x.com)\` |
+| a bullet | \`•\` then two spaces, or \`-\` | \`*\` |
+| a heading | a bold line on its own | \`#\` |
+| a quote | \`> quoted\` | \`>>> quoted\` |
 
-**Joining something already in progress:** read it first with
-\`slack_readThread\`. Somebody has usually answered, and a confident
-restatement of the previous reply is the most annoying message there is.
+A list of repositories, written properly:
 
-**Answering a message that is not the one above yours:** lead with the line you
-are answering, each quoted line starting with a single greater-than sign, then
-answer underneath. One line of it, their words. Never three greater-than signs
-together - that quotes everything after it, your own answer included.
+    Here is the list:
 
-Where acknowledgement is all that is wanted, \`slack_react\` with a checkmark
-says "done, nothing to read here" and costs nobody an unread. That is an answer
-too, and the turn ends there.`,
+    •  *orknux-extension*: plugins and the SDK
+    •  *orknux-server*: the platform itself
+    •  *orknux-ui*
+
+and not \`*  **orknux-extension**:\`, which arrives with every asterisk showing.
+
+There are **no headings and no tables** in mrkdwn at all. A \`#\` line is literal
+text. A table on a phone-width screen is unreadable whatever the syntax - make
+it a short list.
+
+### If you are calling slack_post
+
+It converts the shapes that are never valid mrkdwn on the way out, without
+being asked - \`**bold**\`, \`~~struck~~\`, \`[text](url)\` and \`![alt](url)\`,
+\`#\` headings, \`*\` and \`-\` bullets, numbered lists, tables and \`---\`
+rules. Code spans and fences are left exactly as written; \`<@U0123ABCD>\`,
+\`<#C0123|general>\` and \`<https://x.com|text>\` are left alone because they
+are already Slack's own; and a single \`*\` or \`_\` is never touched, because
+those are already mrkdwn and rewriting them would break the messages that were
+right.
+
+That is a safety net for text that reaches it, not a reason to write markdown.
+Your own replies do not pass through it.
+
+## Never write a mention by hand
+
+\`<@U0123ABCD>\` looks guessable and is not. An id you invented either pings
+nobody or pings a stranger. Call **\`slack_mention\`** with
+the person's name and put its answer in the text exactly as it comes back.
+
+The same applies in reverse: a message that arrives containing \`<@U…>\` is not
+a name. \`slack_whoIs\` turns it into one before you quote it back at somebody.
+
+## Reply in the thread
+
+If you are answering a message, pass its \`threadTs\` to \`slack_post\`. A reply
+posted to the channel instead of the thread is a new conversation in front of
+everybody, and the person who asked has to work out which answer is theirs.
+
+Post to the channel itself only when starting something genuinely new.
+
+## Quote what you are answering, if it is not the message above you
+
+A thread is read in the order things arrived, not in the order they were
+asked. When your reply lands directly under the message it answers, the
+context is one line up and a quote is noise. When two or three other messages
+have come in since — or you are answering the parent from thirty replies down,
+or one of several things somebody asked at once — nothing on the screen says
+which of them you mean, and the reader has to work it out.
+
+So lead with the line you are answering, as a blockquote, and then answer it:
+
+    > can we ship charts before Friday?
+
+    Yes — the renderer is done, the packaging is a day.
+
+\`>\` at the start of a line is a blockquote, and it is one of the few things
+mrkdwn and markdown agree about. **Never \`>>>\`**: that quotes everything
+after it to the end of the message, so your own answer arrives inside the
+quote. One \`>\` per quoted line.
+
+How to tell whether you need one: \`slack_readThread\` answers oldest first. If
+the message you are answering is the last one in that list, skip the quote. If
+anything comes after it, quote it.
+
+And the quote itself:
+
+- **One line, and the clause that matters.** Cut to the question and end with
+  \`…\` where you cut. A quote longer than the answer under it has restated
+  the thread at the people who were in it.
+- **Their words, not your paraphrase.** The whole point is that somebody
+  recognises the sentence as theirs, so fix nothing in it.
+- **Name them where it is not obvious who it was** — \`> *Anna:* …\`, with the
+  name resolved by \`slack_whoIs\`, never a raw \`<@U…>\`. \`slack_mention\` is
+  for when you mean to ping somebody, and quoting them is not that.
+- **Never quote yourself**, and never quote the message immediately above you.
+- **It is not a substitute for \`threadTs\`.** A quote says which message; the
+  thread is still where the reply belongs.
+
+## Before you post at all
+
+\`slack_readThread\` first when you are joining something already in progress.
+Somebody has usually answered already, and the most annoying possible message
+is a confident restatement of what the previous reply said.
+
+React rather than reply when acknowledgement is all that is needed.
+\`slack_react\` with a checkmark says "done, nothing to read here" without
+adding a message to anybody's unread count.`,
       }),
 
       new OrknuxSkill({
