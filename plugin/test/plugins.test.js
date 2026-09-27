@@ -596,6 +596,51 @@ test('post writes mrkdwn, and leaves alone what already was', async () => {
       say('I found:\n*  **orknux-extension**: Plugins and SDK\n*  **orknux-ui**'),
       'I found:\n•  *orknux-extension*: Plugins and SDK\n•  *orknux-ui*',
     );
+
+    /*
+     * What came with the markdown plugin's converter when it moved in here:
+     * the shapes mrkdwn has no spelling for, and the parking that keeps a URL
+     * and a code span out of the emphasis pass.
+     */
+    assert.equal(say('![a chart](https://x.example/c.png)'), '<https://x.example/c.png|a chart>');
+    assert.equal(say('1. one\n2. two'), '1.  one\n2.  two');
+    assert.equal(say('| a | b |\n|---|---|\n| 1 | 2 |'), 'a  b\n1  2');
+    assert.equal(say('---'), '──────────');
+    assert.equal(say('**bold with `code` inside**'), '*bold with `code` inside*');
+    assert.equal(say('# A **bold** heading'), '*A *bold* heading*');
+    assert.equal(say('```js\nconst a = 1;\n```'), '```\nconst a = 1;\n```');
+
+    /*
+     * And what could not come with it. That converter escaped every `<` and
+     * `>` it found, because nothing reaching it was ever Slack's own. Here a
+     * mention is a person `mention` just answered, a channel reference is a
+     * channel, and `>` at the start of a line is the blockquote the posting
+     * skill tells a model to use - so Slack's own markup is parked before the
+     * escaping, and `>` is not escaped at all.
+     */
+    assert.equal(say('ask <@U0123ABCD> in <#C0123|general>'), 'ask <@U0123ABCD> in <#C0123|general>');
+    assert.equal(say('<!here> the build is red'), '<!here> the build is red');
+    assert.equal(say('> why did it fail?\n\nA timeout.'), '> why did it fail?\n\nA timeout.');
+    /* Text still cannot become markup: an unmatched `<` is escaped. */
+    assert.equal(say('a < b & c'), 'a &lt; b &amp; c');
+    assert.equal(say('already &lt;escaped&gt;'), 'already &lt;escaped&gt;');
+
+    /*
+     * The fault this was moved here to fix: a message whose line breaks
+     * arrived as the two characters `\` and `n`, which lands on one line with
+     * the quote and the bold showing as punctuation.
+     */
+    assert.equal(
+      say('*Using my friend*\\n\\n> why did you not use your friend?\\n\\nI managed it alone.'),
+      '*Using my friend*\n\n> why did you not use your friend?\n\nI managed it alone.',
+    );
+    /* One line and one escape is the same fault, so it is repaired too. */
+    assert.equal(say('first\\nsecond'), 'first\nsecond');
+    /* But a sentence about the escape, written in code, is left as it is. */
+    assert.equal(
+      say('Use `\\n` for a line break.\nThat is what it is for.'),
+      'Use `\\n` for a line break.\nThat is what it is for.',
+    );
   } finally {
     globalThis.orknux.slack = slack;
   }
@@ -3460,7 +3505,7 @@ test('the pdf plugin writes a pdf out of html, diagrams and all, without a DOM',
   assert.throws(() => declared.run('<p>   </p>', ''), /no text to lay out/);
 });
 
-test('the markdown plugin declares what the server would accept, and converts what Slack reads', async () => {
+test('the markdown plugin declares what the server would accept, and strips markdown to text', async () => {
   const inspected = await inspect(shipped('markdown'));
 
   assert.equal(inspected.id, 'markdown');
@@ -3469,56 +3514,25 @@ test('the markdown plugin declares what the server would accept, and converts wh
   /* String in, string out: there is nothing here to grant. */
   assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, []);
+  /*
+   * `toSlack` moved into the slack plugin, where the conversion is used: post
+   * writes mrkdwn itself, and a caller that has to remember a second plugin
+   * first is a caller that forgets. What is left here is the direction no
+   * service owns.
+   */
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['toSlack', 'toText'],
+    ['toText'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['toSlack', 'toText'],
+    ['toText'],
   );
 
   const url = new URL(`../../plugins/markdown/markdown.js`, import.meta.url);
   const { default: Markdown } = await import(url.href);
   const functions = new Markdown().functions();
   const one = (name) => functions.find((declared) => declared.name === name);
-  const slack = (text) => one('toSlack').run(text);
-
-  /* The emphasis pass, which is the one that goes wrong if the order slips. */
-  assert.equal(slack('**bold**'), '*bold*');
-  assert.equal(slack('__bold__'), '*bold*');
-  assert.equal(slack('*italic*'), '_italic_');
-  assert.equal(slack('_italic_'), '_italic_');
-  assert.equal(slack('***both***'), '*both*');
-  assert.equal(slack('~~struck~~'), '~struck~');
-  assert.equal(slack('**bold** and *italic*'), '*bold* and _italic_');
-
-  /* Links, which must not meet the emphasis pass at all. */
-  assert.equal(slack('[the docs](https://x.example/a_b_c)'), '<https://x.example/a_b_c|the docs>');
-  assert.equal(slack('![a chart](https://x.example/c.png)'), '<https://x.example/c.png|a chart>');
-  assert.equal(slack('<https://x.example/a_b>'), '<https://x.example/a_b>');
-
-  /* Code, which is literal — the asterisks inside it are asterisks. */
-  assert.equal(slack('`a * b`'), '`a * b`');
-  assert.equal(slack('```js\nconst a = **1**;\n```'), '```\nconst a = **1**;\n```');
-
-  /*
-   * Emphasis inside emphasis, and code inside emphasis: both need the parked
-   * pieces to be restored more than once, which is what the bold pass sets up
-   * by parking its own output rather than writing it back into the line.
-   */
-  assert.equal(slack('**bold with *italic* inside**'), '*bold with _italic_ inside*');
-  assert.equal(slack('**bold with `code` inside**'), '*bold with `code` inside*');
-  assert.equal(slack('# A **bold** heading'), '*A *bold* heading*');
-
-  /* What mrkdwn has no spelling for, left readable rather than dropped. */
-  assert.equal(slack('# Heading'), '*Heading*');
-  assert.equal(slack('- one\n- two'), '•  one\n•  two');
-  assert.equal(slack('1. one\n2. two'), '1.  one\n2.  two');
-  assert.equal(slack('| a | b |\n|---|---|\n| 1 | 2 |'), 'a  b\n1  2');
-
-  /* And the escaping, so text cannot become markup. */
-  assert.equal(slack('a < b & c > d'), 'a &lt; b &amp; c &gt; d');
 
   const text = one('toText').run('# Title\n\n**bold** [docs](https://x.example) `code`\n\n- one');
   assert.equal(text, 'Title\n\nbold docs (https://x.example) code\n\n• one');

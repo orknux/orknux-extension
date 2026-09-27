@@ -2,46 +2,38 @@
 
 Every model writes markdown. Almost nowhere renders it.
 
-Slack reads *mrkdwn*, which looks like markdown and is not: one asterisk means
-bold rather than italic, a link is `<url|text>` rather than `[text](url)`, and
-there are no headings at all. So a perfectly good answer posted straight into a
-channel arrives wearing its own punctuation — `**like this**` — and the reader
-sees the asterisks.
-
-This is the conversion, and it is a string transformation and nothing else: no
-capability, no permission, nothing to reach and nothing to break.
-
 | Function | |
 |----------|---|
-| `toSlack(markdown)` | Markdown as Slack mrkdwn. Run anything you wrote through this before `slack_post`. |
-| `toText(markdown)` | Markdown stripped to plain readable text, for an email subject, a commit message, a log line. |
+| `toText(markdown)` | Markdown stripped to plain readable text, for an email subject, a commit message, a log line, a webhook field. |
 
-## What the conversion actually gets right
+Emphasis markers go, links become `text (url)`, headings become their words,
+tables become their rows, and code keeps its content without the backticks.
+Entities a markdown writer typed — `&amp;`, `&#8212;` — are decoded, because
+the destination renders nothing and would print them.
 
-The easy part is `**bold**` becoming `*bold*`. The hard part is *what not to
-touch* — an asterisk inside a code span is an asterisk, a URL inside a link is
-not text, and a fenced block is literal to its last character. So fences,
-inline code and links are lifted out and parked before anything else runs, and
-put back at the end. That ordering is the whole trick.
+A string transformation and nothing else: no capability, no permission, nothing
+to reach and nothing to break.
 
-The other ordering that matters is double emphasis before single: `**bold**`
-has to become `*bold*` before anything looks at a lone asterisk, or the second
-pass eats the first one's output and the text comes back italic and full of
-stray markers.
+## `toSlack` lives in the slack plugin now
 
-`<`, `>` and `&` are escaped before any markup is built, so the `<` in "a < b"
-stays a less-than instead of opening a link that swallows the rest of the
-message.
+It used to be here, and the pairing read well: one plugin, both directions. But
+the conversion has one caller, and that caller already had to be told to make
+the call — which is the kind of instruction a model follows four times out of
+five. `slack_post` converts what reaches it, so the whole machinery moved into
+the plugin that posts: the parking of fences and code, the links, the headings
+and tables mrkdwn has no spelling for.
 
-## What Slack cannot do, and what becomes of it
+Two things changed on the way, and both are about the place it arrived in.
+Slack's own markup — `<@U0123ABCD>`, `<#C0123|general>`, `<https://x|text>` —
+is parked rather than escaped, because there it is what a caller meant rather
+than something a writer typed. And `>` is no longer escaped at all, because at
+the start of a line it is Slack's blockquote, which the posting skill now tells
+a model to use.
 
-Headings become bold lines and tables become their rows as plain lines, because
-mrkdwn has neither. Images become the link they point at. A fence's language
-tag is dropped, because Slack shows it as the code's first line otherwise.
-Nothing is silently deleted: what cannot be styled is left readable.
+## The skill stayed
 
-## Why it is hand-written rather than bundled
-
-There is no markdown-to-mrkdwn library worth the dependency — the ones that
-exist are a page of regex, and the hard parts above are not the ones a parser
-helps with. The conversion is clearer here than it would be behind an import.
+**"Writing so Slack reads it"** — because the case it is for was never the one
+with a call in it. An agent answering in a thread has its reply posted as it
+stands, with nothing in between to convert anything, and that is the case a
+converter cannot reach: the only fix is having written mrkdwn in the first
+place. The page says what to write, and what a line break has to be.

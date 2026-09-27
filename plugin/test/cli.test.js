@@ -130,7 +130,7 @@ test('a plugin that declares none of them says nothing about them', () => {
 
   assert.doesNotMatch(report, /It ships with:/);
   assert.doesNotMatch(report, /It exports these shapes:/);
-  assert.match(report, /markdown_toSlack/);
+  assert.match(report, /markdown_toText/);
 });
 
 test('the report says which values a parameter takes, where it names them', () => {

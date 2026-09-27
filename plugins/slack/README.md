@@ -306,6 +306,51 @@ for the permalink half.
 Use the `upload*` functions directly when you want the file to *be* the
 message, or when you want its id back.
 
+## post writes mrkdwn, and the converter lives here
+
+Slack reads *mrkdwn*, which resembles markdown closely enough to be mistaken
+for it: `**bold**` arrives with its asterisks showing, `[text](url)` as literal
+brackets, `#` as a hash and a space. Whatever wrote the message cannot see it
+afterwards, so nothing corrects it — which is why `post` converts on the way
+out rather than leaving it to somebody's memory.
+
+The conversion was the markdown plugin's `toSlack` and moved in here, because
+this is where it is used and a caller who has to remember another plugin first
+is a caller who forgets. What it does: fences, inline code, links and images
+are lifted out and parked before anything runs — an asterisk inside a code span
+is an asterisk, and a URL inside a link is not text — then headings become bold
+lines, tables become their rows, `---` becomes a rule, and bullets and numbered
+items get Slack's own spacing.
+
+Three rules are this plugin's own rather than the converter's:
+
+- **A single `*` or `_` is never touched.** One asterisk is *bold* in mrkdwn
+  and one underscore is *italic*, so text that was already right has to come
+  through unchanged. Converting it would break the messages that needed no
+  fixing.
+- **Slack's own markup is parked, not escaped.** `<@U0123ABCD>` is a person
+  `mention` just answered, `<#C0123|general>` is a channel, `<https://x|text>`
+  is a link already spelled the way Slack spells them. The markdown plugin
+  escaped every `<` it saw, because nothing reaching it was ever Slack's.
+- **`>` is not escaped at all**, because at the start of a line it is the
+  blockquote the posting skill tells a model to use when it answers a message
+  that is not the one above it.
+
+### And a line break written as `\n` is repaired
+
+A message arrived in a channel reading
+`*Using my friend*\n\n> why did you not use your friend?\n\nI managed…` — the
+whole answer on one line, escape sequences printed. The model had written the
+two characters instead of the newline, and the cost is not one blank line: a
+`>` is only a quote at the *start* of a line, and Slack will not close a `*`
+span that a backslash follows, so the quote and the bold both died with it.
+
+`post` turns those into real line breaks when the message holds no real one, or
+holds `\n\n` — neither of which a path or a filename can be — and code is
+parked first, so a message *about* `\n`, written in backticks, still says it.
+A reply an agent writes as its own answer passes through none of this: there,
+as the skill says, a real line break is the only thing that is one.
+
 ## Two tokens, because Slack needs two
 
 | | |

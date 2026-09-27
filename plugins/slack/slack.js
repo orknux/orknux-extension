@@ -355,48 +355,253 @@ function uploadedFromUrl(settings, url, filename, channel, comment, threadTs) {
   return completed(settings, at(opened, 'file_id'), named, channel, comment, threadTs);
 }
 
+/*
+ * Markdown, turned into what Slack actually reads.
+ *
+ * This was the markdown plugin's `toSlack` and now lives here, because here is
+ * where it is used: `post` converts on the way out, and a caller that has to
+ * remember a second plugin first is a caller that forgets. What moved is the
+ * machinery - the parking, the ordering, the tables and headings mrkdwn has no
+ * spelling for - and what changed on the way is written at each place it did.
+ *
+ * ## Why it is hand-written rather than a library
+ *
+ * There is no markdown-to-mrkdwn library worth bundling: the ones that exist
+ * are a page of regex, and the hard part is not parsing. The hard part is
+ * *what not to touch* - an asterisk inside a code span is an asterisk, a URL
+ * inside a link is not text, `<@U0123ABCD>` is a person, and a fenced block is
+ * literal to its last character. So all of those are lifted out and parked
+ * before anything runs, and put back at the end. That ordering is the trick.
+ */
+
 /**
- * Markdown that Slack would show as punctuation, turned into mrkdwn.
+ * The character a lifted-out piece is parked under.
  *
- * Slack reads mrkdwn, which resembles markdown closely enough to be mistaken
- * for it: `**bold**` arrives with its asterisks showing, `[text](url)` as
- * literal brackets, `# Heading` as a hash and a space. Whatever wrote the
- * message cannot see it afterwards, so nothing corrects it.
+ * A control character, because it is the one thing that cannot occur in
+ * anybody's markdown by accident - a placeholder built out of letters could be
+ * written by the text it is protecting.
+ */
+const MARK = '\u0000';
+
+/** Lifts pieces out of the text so nothing below rewrites their insides. */
+function protector() {
+  const held = [];
+  return {
+    /** Parks `text` and answers the placeholder standing in for it. */
+    park(text) {
+      held.push(text);
+      return `${MARK}${held.length - 1}${MARK}`;
+    },
+    /**
+     * Puts every parked piece back where its placeholder stands.
+     *
+     * Repeatedly, because a parked piece can hold a placeholder of its own -
+     * bold wrapping a code span parks the code first and then parks the bold
+     * around the marker - so one pass would leave the inner one showing.
+     */
+    restore(text) {
+      let written = text;
+      const pattern = new RegExp(`${MARK}(\\d+)${MARK}`, 'g');
+      for (let pass = 0; pass < 10 && written.includes(MARK); pass++) {
+        written = written.replace(pattern, (whole, index) => held[Number(index)] ?? '');
+      }
+      return written;
+    },
+  };
+}
+
+/**
+ * Slack's own markup, which is not markdown and must survive untouched.
  *
- * Only the five shapes that are **never valid mrkdwn** are touched, and that
- * is the whole of the design. A single `*` is bold in mrkdwn and a single `_`
- * is italic, so a caller who wrote mrkdwn correctly has written something this
- * cannot misread - converting those would break the messages that were already
- * right, which is a worse failure than the one being fixed.
+ * `<@U0123ABCD>` is a person, `<#C0123|general>` a channel, `<!here>` an
+ * announcement, `<https://x.com|text>` a link already spelled the way Slack
+ * spells them. The markdown plugin escaped every `<` it found, because nothing
+ * reaching it was ever Slack's own; here the opposite is true - `mention`
+ * answers one of these and the skill says to put it in the text - so they are
+ * parked before the escaping rather than eaten by it.
+ */
+const SLACK_MARKUP = /<(?:[@#!][^>\n]*|(?:https?|mailto):[^>\n]*)>/g;
+
+/** An `&` that already begins an entity, which must not be escaped twice. */
+const ENTITY = /^&(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);/;
+
+/**
+ * What would otherwise be read as markup, escaped so text stays text.
  *
- * Code is lifted out first and put back last. A fence explaining `**bold**` is
- * about the asterisks, and rewriting them there would be a different kind of
- * wrong.
+ * `<` and `&` only. The markdown plugin escaped `>` as well, and that is the
+ * one rule that could not come with it: `>` at the start of a line is Slack's
+ * blockquote, which the posting skill now tells a model to use when it answers
+ * a message that is not the one above it. Escaping it turned every quote into
+ * a literal greater-than.
+ *
+ * A bare `>` elsewhere reads as itself, and cannot close anything, because
+ * every `<` left by the time this runs is escaped here.
+ */
+function escaped(text) {
+  return text.replace(/&/g, (whole, at, all) => (ENTITY.test(all.slice(at)) ? whole : '&amp;')).replace(/</g, '&lt;');
+}
+
+/** A table row split into its cells, with the pipes and padding gone. */
+function cellsOf(line) {
+  return line
+    .trim()
+    .replace(/^\||\|$/g, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+/** Whether a line is a table's `|---|:--:|` separator rather than content. */
+function isRule(line) {
+  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+}
+
+/**
+ * A message whose line breaks arrived as the two characters `\` and `n`.
+ *
+ * Seen in a channel: a whole answer on one line, reading
+ * `*Using my friend*\n\n> why you did not use your friend?\n\nI managed to…`.
+ * The model wrote the escape sequence instead of the newline - double-escaped
+ * on the way into the tool call - and what that costs is not one blank line.
+ * The blockquote dies, because `>` is only a quote at the start of a line; the
+ * bold dies too, because Slack will not close `*…*` when a backslash follows
+ * the closing asterisk. One missing newline reads as a model that ignored
+ * every rule it had been given.
+ *
+ * Advice would not fix it. The model cannot see the message afterwards, and
+ * this repository has already learned once - with base64 typed into an upload -
+ * that an instruction is not a fix for something a model does while looking
+ * the other way.
+ *
+ * **When it fires**, and the limit is deliberate: either the text holds no real
+ * line break at all, which is the shape of the fault and not of a sentence
+ * about it, or it holds `\\n\\n`, which no filename and no Windows path can be.
+ * A one-line message *about* `\\n` is the case this would get wrong, and the
+ * escape hatch is the one that protects everything else here - backticks. Code
+ * is parked before this runs.
+ */
+function unflattened(text) {
+  const flattened = !text.includes('\n') || text.includes('\\n\\n');
+  return flattened ? text.replace(/\\r\\n|\\n/g, '\n') : text;
+}
+
+/**
+ * Markdown as Slack's mrkdwn.
+ *
+ * The order is the whole of it: fences, then inline code, then Slack's own
+ * markup, then links - each lifted out and parked - and only then the
+ * emphasis, which is the pass that would otherwise chew through a URL or a
+ * code span.
  */
 function mrkdwn(text) {
   if (typeof text !== 'string' || text.length === 0) {
     return text;
   }
 
-  const code = [];
-  let held = text.replace(/```[\s\S]*?```|`[^`\n]+`/g, (found) => {
-    code.push(found);
-    return `@@code${code.length - 1}@@`;
-  });
+  const parked = protector();
+  let held = text.replace(/\r\n?/g, '\n');
 
-  held = held
-    /* Bold before bullets: `**a**` becomes `*a*`, which the bullet rule then
-     * leaves alone because what follows the asterisk is not a space. */
-    .replace(/\*\*\*([^*\n]+)\*\*\*/g, '*_$1_*')
-    .replace(/\*\*([^*\n]+)\*\*/g, '*$1*')
-    .replace(/~~([^~\n]+)~~/g, '~$1~')
-    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
-    /* mrkdwn has no headings; a bold line on its own is what one looks like. */
-    .replace(/^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm, '*$1*')
-    /* And no list syntax either: the bullet has to be a bullet. */
-    .replace(/^([ \t]*)[*+-][ \t]+/gm, '$1•  ');
+  /*
+   * Fenced blocks first and whole. The language tag goes: Slack has no
+   * highlighting to give it to, and shows it as the code's first line.
+   */
+  held = held.replace(/```[^\n]*\n([\s\S]*?)```/g, (whole, code) =>
+    parked.park('```\n' + escaped(code.replace(/\n$/, '')) + '\n```'),
+  );
+  /* An unterminated fence is still a fence to the end of the message. */
+  held = held.replace(/```[^\n]*\n([\s\S]*)$/, (whole, code) => parked.park('```\n' + escaped(code) + '\n```'));
 
-  return held.replace(/@@code(\d+)@@/g, (whole, which) => code[Number(which)] ?? whole);
+  /* Then inline code, which protects whatever punctuation is inside it. */
+  held = held.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1/g, (whole, ticks, code) => parked.park('`' + escaped(code) + '`'));
+
+  /* Then Slack's own markup, which is already right and is nobody's markdown. */
+  held = held.replace(SLACK_MARKUP, (whole) => parked.park(whole));
+
+  /* With the code out of reach, a line break written as an escape is a fault. */
+  held = unflattened(held);
+
+  /*
+   * Then links and images, parked already converted: the url must not meet the
+   * emphasis pass, and `[text](url)` and `![alt](url)` differ only in what
+   * Slack should show for them.
+   */
+  held = held.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (whole, alt, url) =>
+    parked.park(alt.trim().length > 0 ? `<${url}|${escaped(alt)}>` : `<${url}>`),
+  );
+  held = held.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (whole, label, url) =>
+    parked.park(`<${url}|${escaped(inline(label, parked))}>`),
+  );
+
+  /* Everything remaining is text, so it is safe to escape all at once. */
+  held = escaped(held);
+
+  const lines = held.split('\n');
+  const written = [];
+  for (const line of lines) {
+    let one = line;
+
+    /* A table's separator row carries no content, and its cells become lines. */
+    if (isRule(one) && written.length > 0) {
+      continue;
+    }
+    if (one.includes('|') && /^\s*\|/.test(one)) {
+      written.push(cellsOf(one).join('  '));
+      continue;
+    }
+
+    /* Headings: bold, because mrkdwn has none. */
+    one = one.replace(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/, (whole, hashes, said) =>
+      said.trim().length > 0 ? parked.park(`*${inline(said.trim(), parked)}*`) : '',
+    );
+
+    /* Rules: a line, because three hyphens on their own read as nothing. */
+    one = one.replace(/^\s{0,3}([-*_])(\s*\1){2,}\s*$/, '──────────');
+
+    /* Bullets: the character Slack's own lists use, with the nesting kept. */
+    one = one.replace(/^(\s*)[-*+][ \t]+/, (whole, indent) => `${indent}•  `);
+    /* Ordered items keep their number; only the spacing is made even. */
+    one = one.replace(/^(\s*)(\d+)[.)][ \t]+/, (whole, indent, number) => `${indent}${number}.  `);
+
+    written.push(inline(one, parked));
+  }
+
+  return parked.restore(written.join('\n'));
+}
+
+/**
+ * The emphasis pass, on one line's worth of already-protected text.
+ *
+ * Double before single, always: `**bold**` has to become `*bold*` before
+ * anything looks at a lone asterisk, or the second pass eats the first one's
+ * output.
+ *
+ * **And single emphasis is left exactly as it was written**, which is where
+ * this parts company with the plugin it came from. There, everything arriving
+ * was markdown by definition, so `*italic*` became `_italic_`. Here the text is
+ * as often already mrkdwn - a single asterisk is bold and a single underscore
+ * is italic - and rewriting those would break the messages that were right,
+ * which is a worse fault than the one being fixed. So only the shapes that are
+ * *never* valid mrkdwn are touched.
+ */
+function inline(text, parked) {
+  let held = text;
+
+  /*
+   * What the double markers become is *parked*, not written back into the
+   * line: `*bold*` left in the text is indistinguishable from something a
+   * later pass should look at. The contents go round again on the way in, so
+   * emphasis nested inside emphasis is converted rather than frozen.
+   */
+  const bold = (whole, inner) => parked.park(`*${inline(inner, parked)}*`);
+  /* ***both*** is bold and italic, which Slack spells by nesting the two. */
+  held = held.replace(/\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*/g, (whole, inner) =>
+    parked.park(`*_${inline(inner, parked)}_*`),
+  );
+  held = held.replace(/\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*/g, bold);
+  held = held.replace(/__(?!\s)([\s\S]+?)(?<!\s)__/g, bold);
+  /* ~~struck~~ loses a tilde; Slack spells it with one. */
+  held = held.replace(/~~(?!\s)([\s\S]+?)(?<!\s)~~/g, (whole, inner) => parked.park(`~${inline(inner, parked)}~`));
+
+  return held;
 }
 
 /**
@@ -1246,13 +1451,30 @@ it a short list.
 ### If you are calling slack_post
 
 It converts the shapes that are never valid mrkdwn on the way out, without
-being asked - \`**bold**\`, \`~~struck~~\`, \`[text](url)\`, \`#\` headings and \`*\` or
-\`-\` bullets. Code spans and fences are left exactly as written, and a single
-\`*\` or \`_\` is never touched, because those are already mrkdwn and rewriting
-them would break the messages that were right.
+being asked - \`**bold**\`, \`~~struck~~\`, \`[text](url)\` and \`![alt](url)\`,
+\`#\` headings, \`*\` and \`-\` bullets, numbered lists, tables and \`---\`
+rules. Code spans and fences are left exactly as written; \`<@U0123ABCD>\`,
+\`<#C0123|general>\` and \`<https://x.com|text>\` are left alone because they
+are already Slack's own; and a single \`*\` or \`_\` is never touched, because
+those are already mrkdwn and rewriting them would break the messages that were
+right.
 
 That is a safety net for text that reaches it, not a reason to write markdown.
 Your own replies do not pass through it.
+
+### Write real line breaks, not the two characters
+
+A newline written as \`\\\` and \`n\` does not become a line break: it is
+printed, and the whole message lands on one line. That is not one missing blank
+line. A \`>\` quote is only a quote at the *start* of a line, so it becomes a
+greater-than sign; Slack will not close a \`*bold*\` span that a backslash
+follows, so the asterisks print too. One escape turns a well-formed message
+into what looks like a model that ignored every rule on this page.
+
+\`slack_post\` repairs the obvious case - a message with no real line break in
+it, or one holding \`\\n\\n\` - and leaves what is inside backticks alone, so
+a message *about* \`\\n\` still says it. **Your own replies pass through
+nothing.** There, a real line break is the only thing that is one.
 
 ## Never write a mention by hand
 
