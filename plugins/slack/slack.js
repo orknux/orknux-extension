@@ -1462,24 +1462,10 @@ right.
 That is a safety net for text that reaches it, not a reason to write markdown.
 Your own replies do not pass through it.
 
-### Write real line breaks, not the two characters
-
-A newline written as \`\\\` and \`n\` does not become a line break: it is
-printed, and the whole message lands on one line. That is not one missing blank
-line. A \`>\` quote is only a quote at the *start* of a line, so it becomes a
-greater-than sign; Slack will not close a \`*bold*\` span that a backslash
-follows, so the asterisks print too. One escape turns a well-formed message
-into what looks like a model that ignored every rule on this page.
-
-\`slack_post\` repairs the obvious case - a message with no real line break in
-it, or one holding \`\\n\\n\` - and leaves what is inside backticks alone, so
-a message *about* \`\\n\` still says it. **Your own replies pass through
-nothing.** There, a real line break is the only thing that is one.
-
 ## Never write a mention by hand
 
 \`<@U0123ABCD>\` looks guessable and is not. An id you invented either pings
-nobody or pings a stranger. Call **\`slack_mention(connection, name)\`** with
+nobody or pings a stranger. Call **\`slack_mention\`** with
 the person's name and put its answer in the text exactly as it comes back.
 
 The same applies in reverse: a message that arrives containing \`<@U…>\` is not
@@ -2628,8 +2614,8 @@ it notifies nobody else.`,
           'becomes *bold*, [text](url) becomes <url|text>, headings become bold lines and tables ' +
           'become their rows - mrkdwn has neither. Code spans and fences are left exactly as they ' +
           'are, a single * or _ is never touched because that is already mrkdwn, and Slack\'s own ' +
-          'markup - <@U0123ABCD>, <#C0123|general>, <https://x|text> - comes through untouched. A ' +
-          'line break written as the two characters \\n is turned into a real one. post already ' +
+          'markup - <@U0123ABCD>, <#C0123|general>, <https://x|text> - comes through untouched, and a ' +
+          'message whose line breaks arrived as escapes is repaired. post already ' +
           'does all of this to what you give it, so reach for this only where the text is not ' +
           'going straight into a post: a comment composed earlier, a message another plugin will ' +
           'send, or seeing what your markdown becomes.',
