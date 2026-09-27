@@ -38,9 +38,9 @@
  * `teams` wears the Microsoft mark, because no Teams-specific glyph is
  * published.
  *
- * The three with no mark to borrow — `http`, `todo` and `web` — are drawn
- * here rather than hand-written beside their plugins, so that every icon in the
- * repository comes out of one file and every one of them has both variants.
+ * The two with no mark to borrow — `todo` and `web` — are drawn here rather
+ * than hand-written beside their plugins, so that every icon in the repository
+ * comes out of one file and every one of them has both variants.
  *
  *     docker compose run --rm dev npm run build:icons --workspace @orknux/plugins
  */
@@ -77,20 +77,10 @@ const BRANDED = [
 const TITLES = { slack: 'Slack', microsoft: 'Microsoft' };
 
 /**
- * The three with nothing to borrow, drawn as strokes rather than filled paths —
+ * The two with nothing to borrow, drawn as strokes rather than filled paths —
  * which is why they carry their weight and caps with them.
  */
 const DRAWN = [
-  {
-    plugin: 'http',
-    title: 'A plug and its lead',
-    paths: [
-      'M8.5 2.5v5',
-      'M15.5 2.5v5',
-      'M5.5 7.5h13v3a6.5 6.5 0 0 1-13 0Z',
-      'M12 17v4.5',
-    ],
-  },
   {
     plugin: 'todo',
     title: 'A list with its first items checked off',

@@ -6,9 +6,8 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](package.json)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 
-Ten production plugins — Slack, GitHub, Jira, Confluence, Jenkins, Prometheus,
-Teams, web search, HTTP and a todo list — with the library and CLI to write your
-own.
+Nine production plugins — Slack, GitHub, Jira, Confluence, Jenkins, Prometheus,
+Teams, web search and a todo list — with the library and CLI to write your own.
 
 Extending [orknux-server](https://github.com/michjak-szymanski/orknux-server):
 the library you write a plugin against, and the tool that turns it into the one
@@ -89,14 +88,6 @@ snippet per result, so a model can look something up rather than answer from
 memory.
 
     https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/web/web.js
-
-**[http](plugins/http/http.js)** calls whichever HTTP API a workspace points it
-at — the internal one, the vendor with no plugin of its own — with two fences
-around it: a host allowlist checked before the request, and a credential
-attached only to hosts the workspace named, never to a url a model was talked
-into.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/http/http.js
 
 **[todo](plugins/todo/todo.js)** gives an agent a todo list for the length of one
 conversation, so a request too complex to hold in one step is split, worked and
