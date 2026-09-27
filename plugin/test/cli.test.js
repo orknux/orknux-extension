@@ -78,8 +78,8 @@ test('the report shows the id of a skill that pinned one', () => {
   const report = checked(shipped('slack'));
 
   assert.match(report, /New Slack Thread {2}\[new-thread] {2}\(/);
-  /* And a skill that named none is shown without brackets rather than with empty ones. */
-  assert.match(report, /Posting to Slack so people read it {2}\(/);
+  /* Including the one whose id had to stay what it was when the page was split. */
+  assert.match(report, /Posting to Slack so people read it {2}\[posting-to-slack-so-people-read-it]/);
 });
 
 test('the report names the shapes a plugin exports, qualified as they are stored', () => {

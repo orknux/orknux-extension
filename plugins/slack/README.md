@@ -472,21 +472,29 @@ not read the thread" and "this is not the first reply" are different facts, and
 a workflow treating them alike would silently stop firing the day a scope was
 revoked.
 
-## The two skills it brings
+## The four skills it brings
 
-**"Posting to Slack so people read it"** — the habits that separate a message
-people read from one they scroll past: write mrkdwn rather than markdown, never
-hand-write a mention, reply in the thread, quote the message being answered
-when it is not the one directly above, upload a document rather than typing it
-into a message — an HTML page above all, which Slack shows as markup — and
-attach rather than paste a wall of text.
+The page a workspace marks *Always* is the first one, and it is 5 KB rather
+than the 16 KB it used to be: the half about files was loaded into every
+conversation that never sent one.
 
-**"New Slack Thread"**, id `new-thread` — the opposite instruction, for when the
-answer is a topic rather than a reply: post to the channel with an empty
-`threadTs`, which starts a thread of its own, open it with a line of context
-because nothing is above it, hang any file off the `ts` that call answered, and
-end the turn with `finish_answer`. Not a default — it is loaded when a graph or
-a person asks for it, which is why it pins its id rather than letting one be
-derived from a name that can change.
+**"Posting to Slack so people read it"**, id `posting-to-slack-so-people-read-it`
+— how a message is written and where the reply goes: mrkdwn rather than
+markdown, never a hand-written mention, reply in the thread, quote the message
+being answered when it is not the one directly above, and read the thread
+before adding to it.
+
+**"Sending a file to Slack"**, id `slack-sending-a-file` — when the answer is a
+document, a picture or a page rather than a sentence. Which call takes it, what
+each extension gets the reader, why an HTML page arrives as markup, and why a
+link to something on the orknux side is not delivery.
+
+**"Ending a Slack turn"**, id `slack-ending-the-turn` — your answer is already
+a message, so a call that posts and an answer that repeats it send the same
+thing twice. `finish_answer` is how a turn ends when the work already went out.
+
+**"New Slack Thread"**, id `new-thread` — the exception to replying in the
+thread: post to the channel with an empty `threadTs`, open with a line of
+context, hang any file off the `ts` that call answered.
 
 Granted like any other skill catalog; nothing is automatic.

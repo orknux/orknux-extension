@@ -1404,8 +1404,16 @@ export default class Slack extends OrknuxPlugin {
   skills() {
     return [
       new OrknuxSkill({
+        /*
+         * The id is unchanged, and has to be: a workspace marks this one
+         * Always and people type the command. What changed is its weight -
+         * sixteen kilobytes of it went into one model's context in one
+         * call, and the two halves that are not about writing a message are
+         * their own pages now.
+         */
+        id: 'posting-to-slack-so-people-read-it',
         name: 'Posting to Slack so people read it',
-        description: 'What to check before posting a message, and where replies belong.',
+        description: 'How a message is written, and where the reply goes.',
         content: `# Posting to Slack so people read it
 
 A channel is somebody else's interface. Everything below is about not making
@@ -1517,29 +1525,39 @@ And the quote itself:
 - **It is not a substitute for \`threadTs\`.** A quote says which message; the
   thread is still where the reply belongs.
 
-## Length, and the alternative to it
+## Before you post at all
 
-If your answer is longer than a screen, do not paste it. Post two or three
-lines saying what it is and what it concludes, and attach the rest:
+\`slack_readThread\` first when you are joining something already in progress.
+Somebody has usually answered already, and the most annoying possible message
+is a confident restatement of what the previous reply said.
 
-- text — a log, a CSV, a query, a config, source, markdown — goes through
-  **\`slack_upload\`** with a filename whose extension says what it is
-- a PDF or an image goes through **\`slack_uploadBinary\`**, named by the
-  \`key\` its maker answered — \`pdf_fromHtml\` answers one
-- a diagram goes through whatever draws one for you and then
-  \`slack_uploadBinary\` with a \`.png\` filename — see below
+React rather than reply when acknowledgement is all that is needed.
+\`slack_react\` with a checkmark says "done, nothing to read here" without
+adding a message to anybody's unread count.`,
+      }),
 
-A wall of text costs everybody in the channel a scroll. A summary and a file
-costs the two people who care a click.
+      new OrknuxSkill({
+        id: 'slack-sending-a-file',
+        name: 'Sending a file to Slack',
+        description:
+          'When the answer is a document, a picture or a page rather than a sentence - which call ' +
+          'takes it, and what Slack shows of each.',
+        content: `# Sending a file to Slack
 
-## A document is a file. Upload it
+Some answers are not sentences. A report, a page, a picture, a log - those are
+objects, and an object goes into the channel as a file rather than as message
+text. This page is which call, which filename, and what Slack does with each.
 
-The bullets above are the mechanics; this is the decision. **Is the thing you
-made a sentence, or is it an object?** A conclusion, a number, an answer to a
-question is a sentence, and it goes in the message. A report, a page, a spec,
-an HTML document, a transcript, a table of forty rows, a config, a diff,
-somebody's whole log — those are objects, and **an object goes up as a file**
-even where you could have got away with pasting it.
+## The decision
+
+**Is the thing you made a sentence, or is it an object?** A conclusion, a
+number, an answer to a question is a sentence, and it goes in the message. A
+report, a page, a spec, an HTML document, a transcript, a table of forty rows,
+a config, a diff, somebody's whole log — those are objects, and **an object
+goes up as a file** even where you could have got away with pasting it. Post
+two or three lines saying what it is and what it concludes, and attach the
+rest: a wall of text costs everybody in the channel a scroll, and a summary
+with a file costs the two people who care a click.
 
 **What happens instead, most of the time, is that the document is typed into
 the message.** A whole HTML page, or a forty-line report, arrives as message
@@ -1685,7 +1703,14 @@ Three rules:
   applies - upload it, and the reader gets the thing rather than directions to
   it.
 - **Short labels.** A link's text is a few words - \`the run\`, \`page 4\`.
-  Never a sentence, and never the prompt a picture was generated from.
+  Never a sentence, and never the prompt a picture was generated from.`,
+      }),
+
+      new OrknuxSkill({
+        id: 'slack-ending-the-turn',
+        name: 'Ending a Slack turn',
+        description: 'Your answer is already a message, so do not send the same thing twice.',
+        content: `# Ending a Slack turn
 
 ## Sending is saying: do not say it twice
 
@@ -1725,17 +1750,7 @@ the case \`finish_answer\` exists for.
 **And never empty.** An answer of nothing is not the same as no answer - it is
 read as a turn that failed, and the work is done again from the top, which is
 how a thread ends up with the same picture twice. Ending the turn is a call you
-make, not a message you leave blank.
-
-## Before you post at all
-
-\`slack_readThread\` first when you are joining something already in progress.
-Somebody has usually answered already, and the most annoying possible message
-is a confident restatement of what the previous reply said.
-
-React rather than reply when acknowledgement is all that is needed.
-\`slack_react\` with a checkmark says "done, nothing to read here" without
-adding a message to anybody's unread count.`,
+make, not a message you leave blank.`,
       }),
 
       new OrknuxSkill({
