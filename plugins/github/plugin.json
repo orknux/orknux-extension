@@ -10,7 +10,7 @@
     "agents"
   ],
   "summary": "Webhook checks, search, files, builds and comments against GitHub.",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }

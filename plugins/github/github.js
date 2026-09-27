@@ -703,7 +703,7 @@ milliseconds are up. Nothing is held while it runs down — no round open, no
 model billed for the silence — which is why this is the only acceptable way to
 wait for a build.
 
-    finish_answer(answer: '<the note, see below>', wake_after_ms: 180000)
+    finish_answer {"answer": "<the note, see below>", "wake_after_ms": 180000}
 
 Two things the tool itself tells you, and they are worth reading rather than
 guessing: **how many waits this step has left**, and **the longest one wait may
@@ -782,9 +782,11 @@ a formatting check.
 
 **Otherwise hand it to Copilot, on the pull request that is failing:**
 
-    github_messageAgentTask(owner, repo, pullNumber, 'the unit (3.12) check
-      fails with ImportError: cannot import name rates from services.billing.
-      Fix the import and leave the public API alone.')
+    github_messageAgentTask {"owner": "acme", "repo": "api", "pullNumber": 412,
+                             "message": "the unit (3.12) check fails with
+                             ImportError: cannot import name rates from
+                             services.billing. Fix the import and leave the
+                             public API alone."}
 
 That posts a comment mentioning \`@copilot\` on **that** PR, so the fix lands
 on **that** branch, inside the change it belongs to.

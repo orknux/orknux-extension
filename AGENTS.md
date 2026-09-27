@@ -313,6 +313,16 @@ closed — "What to do when a release is bad" earns the click and "Deploy skill"
 does not — and leave the frontmatter out, because the server writes it from the
 name and description and stating the same two facts twice is how they drift.
 
+**An example in a skill is written the way a model has to emit it**: the tool's
+name and a JSON object with double-quoted argument names. Not
+\`slack_post(connection, channel, text, '', [])\`. That reads as a signature and
+it is one - a *workflow function* takes its arguments positionally, and the
+README is where that belongs - but an agent sends a name and an object, and a
+page showing it otherwise is teaching a shape whose nearest rendering is
+malformed JSON. Single quotes are the sharp end: a model that copies \`''\` into
+its arguments sends something no parser accepts, and what comes back is a
+truncated call and a 500 nobody can read.
+
 **A skill may not name another skill.** A page that names a sibling by title is
 not a cross-reference, it is a pointer, and a model holding `skill_load` follows
 pointers: one page saying "this is the opposite of *Posting to Slack so people

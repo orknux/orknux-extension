@@ -1642,10 +1642,13 @@ answers a **png** unless you ask otherwise, and that png goes to
 reader is not a person: something that embeds the markup, or a file somebody is
 going to edit. Posting one to a channel is never that.
 
-Pass the **\`key\`** the render answered, not the bytes:
+Pass the **\`key\`** the render answered, not the bytes. Whatever drew the
+picture answers one beside it - \`{"png": "…", "key": "picture.1k3af9"}\` - and
+that key is what the upload takes:
 
-    <whatever drew it>  ->  { png: '…', key: 'picture.1k3af9' }
-    slack_uploadBinary(channel, 'flow.png', 'picture.1k3af9', comment, threadTs)
+    slack_uploadBinary {"channel": "C0BQE04E273", "filename": "flow.png",
+                        "contentKey": "picture.1k3af9", "comment": "the flow",
+                        "threadTs": ""}
 
 \`slack_uploadBinary\` takes that key in place of the bytes — there is no
 argument to put bytes in, and that is on purpose. The answer reaches the next
@@ -1776,11 +1779,11 @@ topic nobody finds twice.
 
 ## The call
 
-    slack_post(connection, channel, text, '', [])
-                                          ↑
-                                          an empty threadTs is the mechanism
+    slack_post {"connection": "", "channel": "C0BQE04E273",
+                "text": "the message", "threadTs": "", "attachments": []}
 
-An empty \`threadTs\` puts the message in the channel itself, where it reads
+**\`"threadTs": ""\` is the mechanism.** An empty one puts the message in the
+channel itself, where it reads
 as its own topic and anything said about it hangs underneath. Pass the
 \`threadTs\` you were handed and you are back inside somebody else's
 conversation, which is the one thing this skill exists to prevent.
@@ -1818,11 +1821,14 @@ thread is not a reason to ping anybody.
 
 ## The answer's \`ts\` is the new thread's parent
 
-\`slack_post\` answers the message it made. That \`ts\` is the top of the
-thread you have just started, so everything else you send takes it:
+\`slack_post\` answers the message it made - \`{"channel": "C0BQE04E273",
+"ts": "1790517875.472569"}\`. That \`ts\` is the top of the thread you have just
+started, so everything else you send takes it as its \`threadTs\`:
 
-    { channel, ts } = slack_post(conn, channel, text, '', [])
-    slack_uploadBinary(channel, 'charts.png', key, 'the numbers behind it', ts)
+    slack_uploadBinary {"channel": "C0BQE04E273", "filename": "charts.png",
+                        "contentKey": "pdf.1k3af9",
+                        "comment": "the numbers behind it",
+                        "threadTs": "1790517875.472569"}
 
 Upload with an empty \`threadTs\` a second time and you have started a second
 thread about the same thing, which is worse than the reply you were avoiding.
