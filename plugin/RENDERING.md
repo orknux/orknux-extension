@@ -6,14 +6,20 @@ What the server draws for a plugin, and why it has to be the server.
 
 | what | the server today |
 |------|------------------|
-| `RENDER_PNG` | **accepted** — `pngFromSvg`, mirrored, three plugins draw through it |
+| `RENDER_PNG` | **accepted** — `pngFromSvg`, mirrored |
 | `RENDER_PDF` | **accepted** — `pngFromPdf` and `htmlFromPdf`, both mirrored |
-| a plugin using `pngFromPdf` | **written** — `pdf_preview`, the last section |
-| a plugin using `htmlFromPdf` | **written** — `pdf_read`, the same split |
+| a plugin using them | the drawing and document plugins did; the server embeds those now |
 
 Both capabilities are live and both are in `limits.ts` and
 `types/globals.d.ts`, so a plugin declaring either passes `check` here exactly
 as the upload accepts it.
+
+**No plugin in this repository draws any more.** `mermaid`, `plantuml`,
+`nomnoml`, `charts` and `pdf` were the ones that did, and all five are the
+server's own now — same tool names, different side of the sandbox wall. What
+is written below is the contract a plugin is still offered, with the pdf
+plugin's two halves kept as the worked example, because the shape they settled
+on is the shape anything handling bytes wants.
 
 ## Why the server draws
 
@@ -136,10 +142,11 @@ that ran off the side. The contract puts it plainly:
 > the report is ready because that is what it did, rather than because that is
 > what came out.
 
-## The plugin half
+## The plugin half, as the pdf plugin wrote it
 
-A function and a tool on the pdf plugin, and the split is the one three slack
-calls already use:
+A function and a tool, and the split is the one the slack uploads use. The
+plugin has since become the server's, and the pair is kept here because it is
+the pattern rather than the plugin that matters:
 
 ```
 function (workflows)  pdf_preview(base64, page, width)      -> Preview
@@ -189,8 +196,12 @@ most; ask for a range of pages" both carry the only number that tells a caller
 what to do next, and a friendlier sentence of the plugin's own would throw
 exactly that away.
 
-And the consequence that was flagged before it happened, now happened: `pdf`
-asked for **no capability at all** and asks for `RENDER_PDF`. That is a real
-change to what an administrator accepts, and it is why `preview` is a separate
-call rather than something `fromHtml` does on the way out - a workspace that
-only writes documents never draws one and can weigh the grant on its own.
+And the consequence that was flagged before it happened, happened: `pdf` asked
+for **no capability at all** and came to ask for `RENDER_PDF`. That was a real
+change to what an administrator accepts, and it is why `preview` was a separate
+call rather than something `fromHtml` did on the way out - a workspace that
+only writes documents never draws one and could weigh the grant on its own.
+Embedded in the server none of that is asked, for the reason the server's own
+notes give: a capability the product itself needs is not a thing to put to an
+administrator. The lesson survives for anything written out here, where it is
+still somebody else's code.

@@ -11,19 +11,20 @@ the **server** to talk to Slack, under a capability somebody accepted and
 through a connection the workspace pointed it at. The four file functions are
 the exception, and say so below.
 
-## Eighteen functions, seventeen of them tools
+## Nineteen functions, eighteen of them tools
 
 Everything except `isFirstReply` is fronted to agents as a tool. That one is a
 workflow's gate, written to be a condition — a model reading a thread has
 better ways to ask.
 
-Sixteen of those seventeen are the function itself, under a name an agent can
-call. The seventeenth, `uploadBinary`, is a tool of its own with a different
+Seventeen of those eighteen are the function itself, under a name an agent can
+call. The eighteenth, `uploadBinary`, is a tool of its own with a different
 signature — see *Two surfaces* below for why.
 
-Every function in the first two groups takes `connection` first: pass the
+Every function in the first two groups takes `connection` first — pass the
 connection a trigger says its event arrived on, or an empty string to use the
-configured `slack` parameter. The section after the tables says why.
+configured `slack` parameter; the section after the tables says why. The one
+exception is `toSlack`, which reaches nothing and so is told nothing.
 
 ### Reading
 
@@ -46,6 +47,7 @@ configured `slack` parameter. The section after the tables says why.
 | `post(connection, channel, text, threadTs, attachments)` | The new message's `channel` and `ts`. An empty `threadTs` posts to the channel itself. `attachments` hangs files on the message and takes **either kind**: a permalink string for a file already on Slack, or a map for one that isn't there yet — `{filename, content}`, `{filename, base64}`, or `{url}` — which is uploaded first. See below. |
 | `react(connection, channel, ts, emoji)` | `true`. The emoji's short name, with or without colons. Already-reacted counts as done. |
 | `mention(connection, name)` | The notation Slack renders as a ping — `<@U…>` for a person, `<!subteam^S…>` for a group — from a display name, username, email, id or group handle. Put the answer in a message as it is, and never write `<@…>` from a guessed id. |
+| `toSlack(markdown)` | The same text as mrkdwn — the conversion `post` does on the way out, on its own, for text going somewhere else. Takes no `connection`, reaches nothing, sends nothing. |
 
 ### Files out
 
@@ -174,9 +176,8 @@ the middle of it and the whole call was rejected as malformed JSON.
 So both upload functions take a `contentKey` as well as their content:
 
 ```
-mermaid_render('flowchart LR
- A --> B')   → { png: 'iVBORw0…', bytes: 18402, key: 'mermaid.1k3af9' }
-slack_uploadBinary('C123', 'flow.png', 'mermaid.1k3af9', 'the flow', '')
+pdf_fromHtml('<h1>Q3</h1>')   → { base64: 'JVBERi0…', bytes: 18402, key: 'pdf.1k3af9' }
+slack_uploadBinary('C123', 'q3.pdf', 'pdf.1k3af9', 'the quarter', '')
 ```
 
 The key is a dozen characters, and what it names never leaves the server — the
@@ -190,10 +191,9 @@ pass the content or render again, rather than uploading an empty file.
 
 **A diagram goes as a picture.** Slack draws no SVG — it hosts one as a file
 and shows a card with a filename on it, so an SVG in a channel is something
-people have to download before they can see it. `mermaid_render` and
-`nomnoml_render` both answer a `png` unless asked otherwise; send that, with a
-`.png` filename, through `uploadBinary`. `format: 'svg'` is for a reader that
-is not a person.
+people have to download before they can see it. Whatever draws the diagram
+answers a `png` unless asked otherwise; send that, with a `.png` filename,
+through `uploadBinary`. SVG is for a reader that is not a person.
 
 **Everything else that is text goes to `upload`, not `uploadBinary`.** A CSV, a
 log, JSON, a config. Encoding text to base64 to send it as bytes doubles its
@@ -230,8 +230,8 @@ That only works because nothing that makes bytes leaves them unnamed:
 
 | Answers a key | |
 |---|---|
-| `mermaid_render`, `nomnoml_render` | the picture, or the markup |
 | `pdf_fromHtml` | the document |
+| `charts_render` | the picture |
 | `slack_readAttachment` | whichever half it read — so a file moves between channels without passing through anybody |
 
 ## A variable can be a Slack user
@@ -306,7 +306,7 @@ for the permalink half.
 Use the `upload*` functions directly when you want the file to *be* the
 message, or when you want its id back.
 
-## post writes mrkdwn, and the converter lives here
+## post writes mrkdwn, and `toSlack` is the same conversion on its own
 
 Slack reads *mrkdwn*, which resembles markdown closely enough to be mistaken
 for it: `**bold**` arrives with its asterisks showing, `[text](url)` as literal
@@ -314,9 +314,17 @@ brackets, `#` as a hash and a space. Whatever wrote the message cannot see it
 afterwards, so nothing corrects it — which is why `post` converts on the way
 out rather than leaving it to somebody's memory.
 
-The conversion was the markdown plugin's `toSlack` and moved in here, because
-this is where it is used and a caller who has to remember another plugin first
-is a caller who forgets. What it does: fences, inline code, links and images
+The conversion was the markdown plugin's `toSlack` and moved in here with that
+plugin's removal, because this is where it is used and a caller who has to
+remember another plugin first is a caller who forgets. It is also still a call
+of its own — **`slack_toSlack(markdown)`** answers the converted text and posts
+nothing — for text that is not going straight into a message: a comment
+composed a step earlier, something another plugin will send, or simply seeing
+what your markdown becomes. It is the one function here that takes no
+connection, because it reaches nothing.
+
+Callers of the old `markdown_toSlack` have to be pointed at the new name; the
+conversion itself is the same one, with the fixes below. What it does: fences, inline code, links and images
 are lifted out and parked before anything runs — an asterisk inside a code span
 is an asterisk, and a URL inside a link is not text — then headings become bold
 lines, tables become their rows, `---` becomes a rule, and bullets and numbered

@@ -125,12 +125,31 @@ test('the report names the shapes a plugin exports, qualified as they are stored
 });
 
 test('a plugin that declares none of them says nothing about them', () => {
-  /* The sections are worth having only where there is something to say. */
-  const report = checked(shipped('markdown'));
+  /*
+   * The sections are worth having only where there is something to say. Every
+   * plugin shipped here exports a shape now - `markdown`, which exported none,
+   * left with the rest of what the server embeds - so this is written rather
+   * than picked, the way the shapes test above is.
+   */
+  const where = mkdtempSync(join(tmpdir(), 'plain-'));
+  const file = join(where, 'plain.js');
+  writeFileSync(
+    file,
+    `export default class Plain extends OrknuxPlugin {
+       id() { return 'plain'; }
+       apiVersion() { return 1; }
+       functions() {
+         return [new OrknuxFunction({ name: 'ping', description: 'x', returnType: 'boolean', run: () => true })];
+       }
+     }`,
+  );
+
+  const report = checked(file);
 
   assert.doesNotMatch(report, /It ships with:/);
   assert.doesNotMatch(report, /It exports these shapes:/);
-  assert.match(report, /markdown_toText/);
+  assert.doesNotMatch(report, /It teaches:/);
+  assert.match(report, /plain_ping/);
 });
 
 test('the report says which values a parameter takes, where it names them', () => {

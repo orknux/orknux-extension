@@ -36,10 +36,9 @@
  * companies' terms and write it over these files.
  *
  * `teams` wears the Microsoft mark, because no Teams-specific glyph is
- * published. `markdown` is branded for a plainer reason than the rest: its mark
- * is public domain, not a trademark anybody holds.
+ * published.
  *
- * The four that front no service — `pdf`, `todo`, `date`, `web` — are drawn
+ * The three with no mark to borrow — `http`, `todo` and `web` — are drawn
  * here rather than hand-written beside their plugins, so that every icon in the
  * repository comes out of one file and every one of them has both variants.
  *
@@ -70,8 +69,6 @@ const BRANDED = [
   { plugin: 'jira', from: 'simple', icon: 'siJira' },
   { plugin: 'jenkins', from: 'simple', icon: 'siJenkins' },
   { plugin: 'prometheus', from: 'simple', icon: 'siPrometheus' },
-  { plugin: 'mermaid', from: 'simple', icon: 'siMermaid' },
-  { plugin: 'markdown', from: 'simple', icon: 'siMarkdown' },
   { plugin: 'slack', from: 'brands', icon: 'faSlack' },
   { plugin: 'teams', from: 'brands', icon: 'faMicrosoft' },
 ];
@@ -80,20 +77,10 @@ const BRANDED = [
 const TITLES = { slack: 'Slack', microsoft: 'Microsoft' };
 
 /**
- * The four with nothing to borrow, drawn as strokes rather than filled paths —
+ * The three with nothing to borrow, drawn as strokes rather than filled paths —
  * which is why they carry their weight and caps with them.
  */
 const DRAWN = [
-  {
-    plugin: 'pdf',
-    title: 'A page with its corner turned',
-    paths: [
-      'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z',
-      'M14 3v5h5',
-      'M8.5 13h7',
-      'M8.5 16.5h4.5',
-    ],
-  },
   {
     plugin: 'http',
     title: 'A plug and its lead',
@@ -105,50 +92,9 @@ const DRAWN = [
     ],
   },
   {
-    plugin: 'nomnoml',
-    title: 'Two boxes and the line between them',
-    paths: ['M2.5 3.5h8v6h-8Z', 'M13.5 14.5h8v6h-8Z', 'M6.5 9.5v6a2 2 0 0 0 2 2h5'],
-  },
-  {
-    /*
-     * The one drawn icon that does front a service. PlantUML's mark is its own
-     * cartoon character, published under its own terms rather than a licence
-     * this repository could carry a copy under — so what is drawn here is what
-     * the plugin makes, not whose it is.
-     */
-    plugin: 'plantuml',
-    title: 'Two lifelines and the messages between them',
-    paths: [
-      'M3.5 2.5h6v3.5h-6Z',
-      'M14.5 2.5h6v3.5h-6Z',
-      'M6.5 6v15.5',
-      'M17.5 6v15.5',
-      'M6.5 11.5h9.5',
-      'm14 9.5 2 2-2 2',
-      'M17.5 17h-9.5',
-      'm10 15-2 2 2 2',
-    ],
-  },
-  {
-    plugin: 'charts',
-    title: 'Three columns on a baseline',
-    paths: ['M3 20.5h18', 'M6 16.5v-6', 'M12 16.5V5.5', 'M18 16.5v-9'],
-  },
-  {
     plugin: 'todo',
     title: 'A list with its first items checked off',
     paths: ['m3.5 7.5 2 2 3.5-4', 'm3.5 17 2 2 3.5-4', 'M13 7.5h7.5', 'M13 17h7.5'],
-  },
-  {
-    plugin: 'date',
-    title: 'A calendar with a day marked',
-    paths: [
-      'M3 5h18a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z',
-      'M1 11h22',
-      'M7 3v4',
-      'M17 3v4',
-      'm8.5 16 2 2 4-4',
-    ],
   },
   {
     plugin: 'web',

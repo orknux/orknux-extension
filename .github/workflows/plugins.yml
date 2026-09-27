@@ -17,9 +17,8 @@ name: Plugins
 # for checking that the pack still works.
 #
 # The zips are not in the repository, deliberately: they hold only files that
-# are already committed, in a form git cannot delta, and `pdf` alone is 1.6 MB
-# that would be rewritten whole on every rebuild. A release is where a built
-# artifact belongs.
+# are already committed, in a form git cannot delta, and every rebuild would
+# rewrite each of them whole. A release is where a built artifact belongs.
 on:
   push:
     tags: ['plugins-v*']
@@ -70,14 +69,12 @@ jobs:
       # silently. Rebuilding and looking for a diff catches that: the bundler is
       # pinned by package-lock, so the same source gives the same bytes, and any
       # difference means somebody edited a source without rebuilding.
-      - name: Check the built plugins are up to date
+      - name: Check the icons are up to date
         run: |
-          npm run build:plugins
           npm run build:icons --workspace @orknux/plugins
           if ! git diff --quiet -- plugins/; then
-            echo '::error::A built plugin or icon does not match its source'
-            echo 'Rebuild and commit:' >&2
-            echo '  npm run build:plugins' >&2
+            echo '::error::An icon does not match what icons.mjs draws'
+            echo 'Redraw and commit:' >&2
             echo '  npm run build:icons --workspace @orknux/plugins' >&2
             git diff --stat -- plugins/ >&2
             exit 1
@@ -317,9 +314,9 @@ jobs:
                 #
                 # This loop used to stop at the first refusal, which made one
                 # flaky upload of an *unchanged* plugin a wall in front of
-                # every plugin alphabetically after it: a new plantuml went
-                # unpublished three times running because mermaid — the same
-                # bytes already on the marketplace — answered 520. The run
+                # every plugin alphabetically after it: a plugin went
+                # unpublished three times running because an earlier one — the
+                # same bytes already on the marketplace — answered 520. The run
                 # still fails, and now it fails knowing which of them landed.
                 echo "::error::$name — the marketplace answered $status"
                 # The body, for the sentence it carries. It is the API's own

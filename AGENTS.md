@@ -107,11 +107,15 @@ Three things to keep in mind when adding one:
 
 ## Drawing is the server's, because nothing here can
 
-`orknux.render.pngFromSvg` turns markup into a picture under `RENDER_PNG`, and
-three plugins draw through it. It is a capability rather than a library for a
-reason that will not change: the sandbox has no rasteriser, no canvas, no
-WebAssembly to carry one in, and a 5 MB ceiling that a rasteriser passes before
-it does anything.
+`orknux.render.pngFromSvg` turns markup into a picture under `RENDER_PNG`. It is
+a capability rather than a library for a reason that will not change: the
+sandbox has no rasteriser, no canvas, no WebAssembly to carry one in, and a 5 MB
+ceiling that a rasteriser passes before it does anything.
+
+**No plugin here draws through it any more.** `mermaid`, `plantuml`, `nomnoml`,
+`charts` and `pdf` were the callers, and the server embeds all five now - so
+what is written below is the contract a *third-party* plugin is offered, and the
+reason it is worth keeping written down rather than deleted with them.
 
 It is also the narrowest grant on the list. What crosses is bytes a plugin just
 produced and what comes back is bytes computed from them - no connection, no
@@ -131,8 +135,9 @@ parser, same embedded-file and encryption and font models, same risk surface:
 a second capability would ask an operator to weigh a distinction that is not
 there.
 
-`plugin/RENDERING.md` has all three doors, what they answer, and the plugin
-halves now written against them - `pdf_preview` and `pdf_read`.
+`plugin/RENDERING.md` has all three doors and what they answer, with the pdf
+plugin's two halves as the worked example - the plugin has gone to the server,
+and the shape it showed is the shape any plugin handling bytes wants.
 
 ## Crypto is arithmetic, not a grant
 
@@ -201,9 +206,8 @@ from those brand portals under those companies' terms and drop them in over the
 file; the manifest already points at `icon.svg`. `teams` wears the Microsoft
 mark because no Teams-specific glyph is published.
 
-`pdf`, `todo`, `date` and `web` front no service and have no mark to use.
-`markdown` is branded for a plainer reason: its mark is public domain, not a
-trademark anybody holds.
+`http`, `todo` and `web` front no service with a mark to borrow, so their
+glyphs are drawn in `icons.mjs` rather than taken from a collection.
 
 **Every plugin ships two icons, and that is not decoration.** `icon.svg` is
 the dark glyph for a light listing — what the manifest names — and
@@ -316,9 +320,8 @@ quietly breaks every graph and every command that named the old one.
 **Packing is driven by the manifest, never by walking the folder.**
 `plugins/pack.mjs` puts the plugin, its `plugin.json`, the README that manifest
 names, the icon and the libraries `libraries()` declares at a zip's top level —
-and nothing else. `src/` is excluded by construction rather than by a rule:
-shipping `src/mermaid.js` would ship a file full of bare imports that cannot
-load at all. Each plugin is inspected first, the way the server inspects it, so
+and nothing else, so nothing a folder happens to hold can travel with it. Each
+plugin is inspected first, the way the server inspects it, so
 packing fails on something the server would refuse rather than producing a zip
 that fails at the upload. Zips land in `plugins/dist/`, which is ignored, and
 are deterministic — every entry carries a fixed 1980 timestamp, so the same

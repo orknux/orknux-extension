@@ -1540,8 +1540,8 @@ lines saying what it is and what it concludes, and attach the rest:
   **\`slack_upload\`** with a filename whose extension says what it is
 - a PDF or an image goes through **\`slack_uploadBinary\`**, named by the
   \`key\` its maker answered — \`pdf_fromHtml\` answers one
-- a diagram goes through **\`mermaid_render\`** or **\`nomnoml_render\`** and
-  then \`slack_uploadBinary\` with a \`.png\` filename — see below
+- a diagram goes through whatever draws one for you and then
+  \`slack_uploadBinary\` with a \`.png\` filename — see below
 
 A wall of text costs everybody in the channel a scroll. A summary and a file
 costs the two people who care a click.
@@ -1636,17 +1636,16 @@ a document and sending a surprise.
 on it, so an SVG posted to a channel is a thing people have to download and open
 before they can see it — which is to say, a thing most of them will never see.
 
-So take the default and do not think about it. \`mermaid_render\` and
-\`nomnoml_render\` both answer a **png** unless you ask otherwise, and that png
-goes to \`slack_uploadBinary\` with a \`.png\` filename. Ask for
-\`format: 'svg'\` only when the reader is not a person: something that embeds
-the markup, or a file somebody is going to edit. Posting one to a channel is
-never that.
+So take the default and do not think about it. Whatever draws your diagram
+answers a **png** unless you ask otherwise, and that png goes to
+\`slack_uploadBinary\` with a \`.png\` filename. Ask for SVG only when the
+reader is not a person: something that embeds the markup, or a file somebody is
+going to edit. Posting one to a channel is never that.
 
 Pass the **\`key\`** the render answered, not the bytes:
 
-    mermaid_render(source)  ->  { png: '…', key: 'mermaid.1k3af9' }
-    slack_uploadBinary(channel, 'flow.png', 'mermaid.1k3af9', comment, threadTs)
+    <whatever drew it>  ->  { png: '…', key: 'picture.1k3af9' }
+    slack_uploadBinary(channel, 'flow.png', 'picture.1k3af9', comment, threadTs)
 
 \`slack_uploadBinary\` takes that key in place of the bytes — there is no
 argument to put bytes in, and that is on purpose. The answer reaches the next
@@ -2010,7 +2009,8 @@ it notifies nobody else.`,
         description:
           posted.description +
           ' An attachment that is not already on Slack is named, never typed: give the map a ' +
-          'contentKey - the key mermaid_render, nomnoml_render or pdf_fromHtml answered beside ' +
+          'contentKey - the key the tool that made the bytes answered beside them, as pdf_fromHtml ' +
+          'and charts_render do - ' +
           'the bytes - or a url for a file that lives at one. A map carrying base64 is refused ' +
           'here, because a few kilobytes of it written into a tool call arrives a character wrong ' +
           'and the whole call is rejected before anything runs.' +
@@ -2029,8 +2029,8 @@ it notifies nobody else.`,
             if (one !== null && typeof one === 'object' && typeof at(one, 'base64') === 'string') {
               throw new Error(
                 'an attachment cannot carry base64 here: pass contentKey instead, the key the ' +
-                  'tool that made the bytes answered. mermaid_render, nomnoml_render and ' +
-                  'pdf_fromHtml all answer one. For a file that already lives at a url, give the ' +
+                  'tool that made the bytes answered; pdf_fromHtml and charts_render both ' +
+                  'answer one. For a file that already lives at a url, give the ' +
                   'attachment that url and it is fetched without either of us handling it.',
               );
             }
@@ -2038,6 +2038,7 @@ it notifies nobody else.`,
           return posted.run(connection, channel, text, threadTs, attachments);
         },
       }),
+      new OrknuxFunctionTool({ function: 'toSlack' }),
       new OrknuxFunctionTool({ function: 'react' }),
       new OrknuxFunctionTool({ function: 'search' }),
       new OrknuxFunctionTool({ function: 'findRecent' }),
@@ -2064,8 +2065,8 @@ it notifies nobody else.`,
         description:
           'Puts bytes on Slack as a file the workspace hosts - a PDF, a rendered diagram - and ' +
           'shares them to a channel with a message. The bytes are named, never typed: pass the ' +
-          'short contentKey the tool that made them answered beside them. mermaid_render, ' +
-          'nomnoml_render and pdf_fromHtml all answer one. There is deliberately no base64 ' +
+          'short contentKey the tool that made them answered beside them; pdf_fromHtml and ' +
+          'charts_render both answer one. There is deliberately no base64 ' +
           'argument here: a few kilobytes of it written back into a tool call arrives with a ' +
           'character wrong and the whole call is rejected before anything runs, so the argument ' +
           'that invited that is gone. Also pass a filename whose extension says what the bytes ' +
@@ -2087,7 +2088,7 @@ it notifies nobody else.`,
           if (typeof contentKey !== 'string' || contentKey.length === 0) {
             throw new Error(
               'uploadBinary takes a contentKey, not bytes: make the file first and pass the key ' +
-                'that answer carried. mermaid_render, nomnoml_render and pdf_fromHtml all answer ' +
+                'that answer carried; pdf_fromHtml and charts_render both answer ' +
                 'one. For bytes that live at a url, uploadFromUrl fetches them without either of ' +
                 'us handling them.',
             );
@@ -2601,6 +2602,36 @@ it notifies nobody else.`,
         },
       }),
 
+      /*
+       * The conversion on its own, for text that is not going through `post`.
+       *
+       * `post` converts what reaches it, which covers the message being sent;
+       * this covers everything else - a comment on an upload composed a step
+       * earlier, a workflow node that builds text now and posts it three nodes
+       * later, a Teams message a workspace wants spelled the same way, and
+       * anybody who simply wants to see what their markdown becomes.
+       *
+       * The one function here that takes no connection, and deliberately: it
+       * reaches nothing, asks nothing of Slack and cannot fail. An argument
+       * that exists only to keep a shape is an argument somebody has to fill.
+       */
+      new OrknuxFunction({
+        name: 'toSlack',
+        description:
+          'Turns markdown into the mrkdwn a Slack message actually reads, and answers it. **bold** ' +
+          'becomes *bold*, [text](url) becomes <url|text>, headings become bold lines and tables ' +
+          'become their rows - mrkdwn has neither. Code spans and fences are left exactly as they ' +
+          'are, a single * or _ is never touched because that is already mrkdwn, and Slack\'s own ' +
+          'markup - <@U0123ABCD>, <#C0123|general>, <https://x|text> - comes through untouched. A ' +
+          'line break written as the two characters \\n is turned into a real one. post already ' +
+          'does all of this to what you give it, so reach for this only where the text is not ' +
+          'going straight into a post: a comment composed earlier, a message another plugin will ' +
+          'send, or seeing what your markdown becomes.',
+        params: [{ name: 'markdown', type: 'string' }],
+        returnType: 'string',
+        run: (markdown) => (typeof markdown === 'string' ? mrkdwn(markdown) : ''),
+      }),
+
       new OrknuxFunction({
         name: 'react',
         description:
@@ -2894,8 +2925,8 @@ it notifies nobody else.`,
         name: 'uploadBinary',
         description:
           'Uploads bytes to Slack as a file the workspace hosts - a PDF, a PNG, a JPEG - and ' +
-          'shares them to a channel with a message. PASS contentKey, NOT base64: mermaid_render, ' +
-          'nomnoml_render and pdf_fromHtml each answer a short key beside the bytes, and giving ' +
+          'shares them to a channel with a message. PASS contentKey, NOT base64: pdf_fromHtml and ' +
+          'charts_render each answer a short key beside the bytes, and giving ' +
           'that key here takes them off the server instead of out of what you type back. A few ' +
           'kilobytes of base64 does not survive being written into a tool call - it arrives with a ' +
           'character wrong and the whole call is rejected as malformed - so copying the bytes out ' +

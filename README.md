@@ -6,9 +6,9 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](package.json)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 
-Seventeen production plugins — Slack, GitHub, Jira, Confluence, Jenkins,
-Prometheus, Mermaid, PlantUML, nomnoml, Charts, PDF, web search, HTTP and more — with
-the library and CLI to write your own.
+Ten production plugins — Slack, GitHub, Jira, Confluence, Jenkins, Prometheus,
+Teams, web search, HTTP and a todo list — with the library and CLI to write your
+own.
 
 Extending [orknux-server](https://github.com/michjak-szymanski/orknux-server):
 the library you write a plugin against, and the tool that turns it into the one
@@ -83,59 +83,12 @@ running system is doing.
 
     https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/prometheus/prometheus.js
 
-**[mermaid](plugins/mermaid/mermaid.js)** renders mermaid diagrams to SVG inside
-the sandbox — no browser, no DOM, nothing fetched — and links to the live editor
-for the diagram kinds it does not draw.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/mermaid/mermaid.js
-
-**[plantuml](plugins/plantuml/plantuml.js)** draws what mermaid is worst at —
-sequence diagrams with activation and grouping, class diagrams with real
-cardinality, gantt, mindmaps, wireframes — in the sandbox: the engine is
-bundled, nothing is fetched, and no diagram leaves the machine. Graph layout is
-Smetana, PlantUML's own port of dot, because Graphviz ships as WebAssembly and
-there is none here. A syntax error comes back as the line it is on rather than
-as a picture of the words "syntax error".
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/plantuml/plantuml.js
-
-**[nomnoml](plugins/nomnoml/nomnoml.js)** draws the UML-shaped diagrams mermaid
-is awkward at — classes with their fields, actors, packages inside packages,
-state machines — rendered in the sandbox at eighty kilobytes, asking for no
-capability and no permission at all.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/nomnoml/nomnoml.js
-
-**[charts](plugins/charts/charts.js)** draws the shape of a number — bar, column,
-line, area, pie and donut — from a JSON spec, in the sandbox, with nothing
-bundled and nothing fetched: eight hues in an order that stays apart under
-colour-blindness, one axis, thin marks, a legend when there are two series.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/charts/charts.js
-
-**[pdf](plugins/pdf/pdf.js)** lays HTML out as a PDF on A4, mermaid diagrams
-drawn into the page as vectors. Writer, fonts and renderer are all bundled in.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/pdf/pdf.js
-
 **[web](plugins/web/web.js)** searches the web — through Tavily or Brave,
 whichever the workspace configures — and answers title, url and a readable
 snippet per result, so a model can look something up rather than answer from
 memory.
 
     https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/web/web.js
-
-**[date](plugins/date/date.js)** answers the working calendar: business days,
-working hours, and date arithmetic that gets month ends and daylight saving
-right. It reaches nothing, so it cannot break when an API does.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/date/date.js
-
-**[markdown](plugins/markdown/markdown.js)** turns the markdown a model writes
-into the mrkdwn Slack actually reads — or into plain text — without mangling
-the code spans and links along the way.
-
-    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/markdown/markdown.js
 
 **[http](plugins/http/http.js)** calls whichever HTTP API a workspace points it
 at — the internal one, the vendor with no plugin of its own — with two fences
@@ -151,10 +104,21 @@ checked off. It asks the platform for nothing at all.
 
     https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/todo/todo.js
 
-Each folder holds the plugin, its `plugin.json` marketplace manifest and the
-`README.md` that manifest names. `mermaid`, `nomnoml` and `pdf` bundle
-libraries, so their source is in `src/` and the file above is the build —
-[AGENTS.md](AGENTS.md) has the details.
+Each folder holds the plugin, its `plugin.json` marketplace manifest, the
+`README.md` that manifest names and the two icons — one file each, as the
+server loads them.
+
+### What used to be here
+
+`mermaid`, `plantuml`, `nomnoml`, `charts`, `pdf`, `markdown` and `date` were
+plugins and are now the server's own. A drawing, a document and a calendar are
+things the product needs rather than things a workspace chooses, and each was
+paying the sandbox's price for it: a hand-written mermaid parser that knew five
+diagram kinds, fonts carried as base64 subsets, a chart that could not get into
+a page because the two bundles had a session store between them. The names an
+agent calls are unchanged — `pdf_fromHtml` is still `pdf_fromHtml` — so nothing
+written against them has to be rewritten. Their history is in this repository
+up to the commit that took them out.
 
 ## Working here
 

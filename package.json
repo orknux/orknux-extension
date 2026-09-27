@@ -12,7 +12,6 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @orknux/plugin",
-    "build:plugins": "npm run build --workspace @orknux/plugins",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test --workspace @orknux/plugin",
     "example": "npm run build --workspace @orknux/example-teammates"

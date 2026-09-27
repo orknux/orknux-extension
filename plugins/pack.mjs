@@ -20,10 +20,12 @@
  * ships with. Everything is placed at the zip's top level, exactly where the
  * schema says an uploader will look for it.
  *
- * `src/` is deliberately not in that list. A built plugin keeps its source
- * beside the artifact under the same name, and shipping `src/mermaid.js` would
- * ship a file full of bare imports that cannot load at all — so the packer
- * only ever takes files something named, and never walks the folder.
+ * Nothing else in the folder is in that list, and the packer never walks one.
+ * A plugin that bundled a library kept its source beside the artifact, and
+ * shipping that source would have shipped a file full of bare imports that
+ * cannot load at all — so the rule is that the packer only ever takes files
+ * something named. None of the plugins here is a build today; the rule is what
+ * makes that stay true without anybody checking.
  *
  * ## Refusing rather than shipping something broken
  *

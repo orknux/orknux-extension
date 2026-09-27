@@ -2,21 +2,14 @@
   "name": "@orknux/plugins",
   "private": true,
   "version": "0.0.0",
-  "description": "The production plugins: sources that may import npm libraries, built into the flat files the server loads.",
+  "description": "The production plugins, as the server loads them: one flat file each, and the icon beside it.",
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
     "build:icons": "node icons.mjs",
     "pack": "node pack.mjs"
   },
   "devDependencies": {
     "@fortawesome/free-brands-svg-icons": "^7.3.1",
-    "beautiful-mermaid": "^1.1.3",
-    "dejavu-fonts-ttf": "^2.37.3",
-    "jspdf": "^3.0.0",
-    "nomnoml": "^1.7.0",
-    "@plantuml/core": "^1.2026.8",
-    "simple-icons": "^16.31.0",
-    "subset-font": "^2.7.0"
+    "simple-icons": "^16.31.0"
   }
 }
