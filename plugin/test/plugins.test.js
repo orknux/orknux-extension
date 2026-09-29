@@ -3096,3 +3096,77 @@ test('slack findRecent carries on through the threads it had no room to open', a
   assert.equal(rest.incompleteBecause, null);
   assert.equal(opened.length, 31, 'every thread opened exactly once across the two calls');
 });
+
+/*
+ * Asked for: "can you make this almost full text search?" Diacritics folded,
+ * words matched by their stem so other forms match, words split out of
+ * hyphenated ones, "phrases", OR, -exclusions, and attachments and file names
+ * searched as well as the text.
+ */
+test('slack findRecent matches like a search: diacritics, word forms, phrases, OR, exclusions and attachments', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  const history = {
+    ok: true,
+    has_more: false,
+    messages: [
+      { ts: '1700000900.000100', user: 'U1', text: 'Problem z Flash-Wysyłki od rana' },
+      { ts: '1700000800.000100', user: 'U2', text: 'ile wysyłek poszło wczoraj?' },
+      { ts: '1700000700.000100', user: 'U3', text: 'kurier flash spóźniony' },
+      { ts: '1700000600.000100', user: 'U4', text: 'flash wysyłka test na stagingu' },
+      {
+        ts: '1700000500.000100',
+        user: 'U5',
+        text: '',
+        attachments: [{ title: 'Build failed', text: 'flash-wysylki-service: tests red' }],
+      },
+      { ts: '1700000400.000100', user: 'U6', text: 'see the file', files: [{ name: 'raport-wysylki.csv', title: 'raport' }] },
+      { ts: '1700000300.000100', user: 'U7', text: 'lunch?' },
+    ],
+  };
+
+  const door = globalThis.orknux.http.request;
+  const search = (query) => call('findRecent').run(query, '#bos-team', 30, 50, false, 1, '', false).matches.map((one) => one.user);
+  const answered = {};
+  try {
+    globalThis.orknux.http.request = (what) => {
+      const method = what.url.slice('https://slack.com/api/'.length);
+      if (method === 'users.conversations') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+      }
+      if (method === 'auth.test') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+      }
+      if (method === 'conversations.history') {
+        return { status: 200, headers: {}, body: '{}', json: history };
+      }
+      throw new Error(`the test was not expecting ${method}`);
+    };
+    answered.folded = search('wysylki');
+    answered.stem = search('wysyłka');
+    answered.both = search('flash wysylka');
+    answered.phrase = search('"flash wysylki"');
+    answered.or = search('kurier OR lunch');
+    answered.not = search('flash wysylka -staging');
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  /* Without the ł, and inside a hyphenated word, an attachment and a file name. */
+  assert.deepEqual(answered.folded, ['U1', 'U2', 'U4', 'U5', 'U6']);
+  /* Another form of the word: wysyłka finds wysyłki and wysyłek. */
+  assert.deepEqual(answered.stem, ['U1', 'U2', 'U4', 'U5', 'U6']);
+  /* Both words, anywhere. */
+  assert.deepEqual(answered.both, ['U1', 'U4', 'U5']);
+  /* Together, in that order. */
+  assert.deepEqual(answered.phrase, ['U1', 'U4', 'U5']);
+  /* Either group. */
+  assert.deepEqual(answered.or, ['U3', 'U7']);
+  /* And one left out. */
+  assert.deepEqual(answered.not, ['U1', 'U5']);
+});

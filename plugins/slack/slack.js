@@ -968,6 +968,122 @@ function userOf(one) {
   };
 }
 
+/*
+ * A search of text the bot has read, as near to full text as a scan gets.
+ *
+ * Asked for: "can you make this almost full text search?" Every word had to
+ * appear exactly, capitals aside - so "wysylki" missed "wysyłki", "wysyłka"
+ * missed "wysyłek", and a word inside "Flash-Wysyłki" was found only by luck.
+ * Now: diacritics folded, words split on anything that is not a letter or a
+ * digit, a word matched by its stem so its other forms match too, "a phrase"
+ * in quotes, OR between alternatives, and -word to leave one out.
+ */
+
+/** Lower case with the marks taken off, and the letters NFD cannot split handled by hand. */
+function folded(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ł/g, 'l')
+    .replace(/đ/g, 'd')
+    .replace(/ø/g, 'o')
+    .replace(/ß/g, 'ss')
+    .replace(/æ/g, 'ae')
+    .replace(/œ/g, 'oe');
+}
+
+/** The words of a text, folded, in order. */
+function wordsOf(text) {
+  return folded(text).split(/[^\p{L}\p{N}]+/u).filter((one) => one.length > 0);
+}
+
+/*
+ * What a word in the query matches: a word in the text that starts with its
+ * stem. A long word loses its last two letters and a middling one its last,
+ * which is roughly where an inflected language keeps its endings - "wysylka"
+ * becomes "wysyl" and finds wysylki, wysylek, wysylkami - while a short word
+ * is taken as it is and matches as a prefix, so "prod" finds "production".
+ */
+function stemOf(word) {
+  if (word.length >= 7) {
+    return word.slice(0, word.length - 2);
+  }
+  if (word.length >= 5) {
+    return word.slice(0, word.length - 1);
+  }
+  return word;
+}
+
+/**
+ * A query, read once: OR-separated groups, each of phrases that must all be
+ * there and words that must not.
+ */
+function parsedQuery(query) {
+  const groups = [];
+  let current = { must: [], mustNot: [] };
+  const pattern = /(-?)"([^"]*)"|(\S+)/g;
+  let found;
+  while ((found = pattern.exec(String(query ?? ''))) !== null) {
+    if (found[3] !== undefined && found[3] === 'OR') {
+      if (current.must.length > 0 || current.mustNot.length > 0) {
+        groups.push(current);
+      }
+      current = { must: [], mustNot: [] };
+      continue;
+    }
+    const negated = found[1] === '-' || (found[3] !== undefined && found[3].startsWith('-') && found[3].length > 1);
+    const raw = found[2] !== undefined ? found[2] : negated ? found[3].slice(1) : found[3];
+    const phrase = wordsOf(raw).map(stemOf);
+    if (phrase.length === 0) {
+      continue;
+    }
+    (negated ? current.mustNot : current.must).push(phrase);
+  }
+  if (current.must.length > 0 || current.mustNot.length > 0) {
+    groups.push(current);
+  }
+  return groups;
+}
+
+/** Whether the words hold the phrase: its stems, one after another. */
+function holds(words, phrase) {
+  for (let start = 0; start + phrase.length <= words.length; start += 1) {
+    if (phrase.every((stem, at) => words[start + at].startsWith(stem))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a text answers a parsed query: any group whose phrases are all there and whose exclusions are not. */
+function answers(text, groups) {
+  const words = wordsOf(text);
+  return groups.some(
+    (group) =>
+      group.must.length > 0 &&
+      group.must.every((phrase) => holds(words, phrase)) &&
+      !group.mustNot.some((phrase) => holds(words, phrase)),
+  );
+}
+
+/*
+ * Everything a message says, not only its text. A bot's message often carries
+ * its words in attachments - a build result, a link preview, a forwarded
+ * message - and a file is found by its name as often as by what was said
+ * beside it.
+ */
+function spokenIn(one) {
+  const parts = [at(one, 'text')];
+  for (const attached of at(one, 'attachments') ?? []) {
+    parts.push(at(attached, 'title'), at(attached, 'pretext'), at(attached, 'text'), at(attached, 'fallback'));
+  }
+  for (const file of at(one, 'files') ?? []) {
+    parts.push(at(file, 'title'), at(file, 'name'));
+  }
+  return parts.filter((part) => typeof part === 'string' && part.length > 0).join('\n');
+}
+
 /** Whether every word is somewhere in the text, in any order and whatever the capitals. */
 function carries(text, terms) {
   const haystack = String(text ?? '').toLowerCase();
@@ -2848,9 +2964,13 @@ it notifies nobody else.`,
           'Finds messages by reading recent history and filtering it, which is what a bot can do ' +
           'where search cannot: Slack answers search.messages for a user token only, so this runs ' +
           'on the bot token instead and reads the channels the bot has been invited to. Every word ' +
-          'of the query has to appear somewhere in a message, in any order and whatever the ' +
-          'capitals - it is not Slack search syntax, so in:#channel and from:@name do not work; ' +
-          'pass the channel separately. channel takes a name, a #name or an id, and left empty ' +
+          'of the query has to appear somewhere in a message, in any order, whatever the capitals ' +
+          'and the diacritics, and in any of its forms - a word is matched by its stem, so wysylka ' +
+          'finds wysyłki and wysyłek, and a word inside Flash-Wysyłki counts. "Words in quotes" must ' +
+          'appear together, OR between groups finds either, and -word leaves out messages that say ' +
+          'it. Attachments, link previews and file names are searched as well as the text. It is ' +
+          'not Slack search syntax, so in:#channel and from:@name do not work; pass the channel ' +
+          'separately. channel takes a name, a #name or an id, and left empty ' +
           'reads every channel the bot is in, up to fifteen. days is how far back to read, a week ' +
           'if not given. Answers the matches newest first with a permalink each, how much was read ' +
           'to find them, and whether the window was read whole. This is a scan and not an index: ' +
@@ -2876,12 +2996,8 @@ it notifies nobody else.`,
         ],
         returnType: 'RecentResult',
         run: (query, channel, days, limit, withNames, pages, cursor, threads) => {
-          const terms = (typeof query === 'string' ? query : '')
-            .trim()
-            .toLowerCase()
-            .split(/\s+/)
-            .filter((one) => one.length > 0);
-          if (terms.length === 0) {
+          const groups = parsedQuery(typeof query === 'string' ? query : '');
+          if (groups.length === 0 || groups.every((group) => group.must.length === 0)) {
             throw new Error('there is nothing to look for');
           }
           const back = Math.min(Math.max(Math.trunc(days), 1), 365);
@@ -2947,7 +3063,7 @@ it notifies nobody else.`,
               return;
             }
             const text = at(one, 'text');
-            if (!carries(text, terms)) {
+            if (!answers(spokenIn(one), groups)) {
               return;
             }
             const ts = at(one, 'ts');
