@@ -774,8 +774,27 @@ function searchAs(token, query, limit) {
  */
 const SCANNED = 15;
 
-/** One page of history per channel, which is Slack's own maximum for the call. */
+/** One page of history, which is Slack's own maximum for the call. */
 const PAGE = 200;
+
+/*
+ * How many pages one call reads of each channel. One across many channels,
+ * which keeps a scan of fifteen inside a single sandbox call; five of a named
+ * channel, a thousand messages; and never more than twenty, however many are
+ * asked for. Past that the call answers a cursor and the next call carries on.
+ * Asked for: "can it search piece by piece?" - it could not, and said so.
+ */
+const PAGES_ACROSS = 1;
+const PAGES_NAMED = 5;
+const PAGES_MOST = 20;
+
+/*
+ * How many threads one call opens to read their replies. History answers a
+ * thread's first message only, so a scan that never opened one missed most of
+ * what a thread said - which is what somebody asking to summarise threads
+ * wants. A request each, so a cap; past it the answer is not complete.
+ */
+const THREADS_READ = 30;
 
 /** The noise a channel keeps that nobody is searching for. */
 const NOISE = ['channel_join', 'channel_leave', 'group_join', 'group_leave'];
@@ -1286,6 +1305,11 @@ export default class Slack extends OrknuxPlugin {
               'findRecent, which gets an id like everything that reads history.',
           },
           { name: 'text', kind: 'string', description: 'What it says.' },
+          {
+            name: 'threadTs',
+            kind: 'string',
+            description: "The thread it is a reply in, by its first message's timestamp; null for a message in the channel itself.",
+          },
           { name: 'permalink', kind: 'string', description: 'The way back to it — readMessage takes this.' },
         ],
       }),
@@ -1313,8 +1337,16 @@ export default class Slack extends OrknuxPlugin {
             kind: 'boolean',
             description:
               'Every channel asked for was read to the end of the window. False means there is ' +
-              'more inside it — narrow the days, or name one channel.',
+              'more inside it — pass nextCursor as cursor to carry on, narrow the days, or name one channel.',
           },
+          {
+            name: 'nextCursor',
+            kind: 'string',
+            description:
+              'Where a named channel carries on: pass it back as cursor, with the same channel, query and ' +
+              'days, for the next piece. Null when the window was read to its end.',
+          },
+          { name: 'threadsRead', kind: 'number', description: 'How many threads were opened to read their replies.' },
         ],
       }),
 
@@ -2817,16 +2849,25 @@ it notifies nobody else.`,
           'to find them, and whether the window was read whole. This is a scan and not an index: ' +
           'it sees recent history rather than the archive, and nothing in a channel the bot was ' +
           'never invited to. Each match says who wrote it as a userName as well as an id, which costs ' +
-          'one lookup per distinct author among the matches shown.',
+          'one lookup per distinct author among the matches shown. With one channel named it reads ' +
+          'further: pages of 200 messages each (five unless pages says otherwise, twenty at most), ' +
+          'and the replies inside threads as well as their first messages - a reply that matches says ' +
+          'its threadTs. Where there is more behind what was read it answers nextCursor: pass that as ' +
+          'cursor, with the same channel, query and days, to carry on from there, and keep going until ' +
+          'nextCursor is null to have searched the whole window piece by piece. days goes back a year ' +
+          'at most.',
         params: [
           { name: 'query', type: 'string' },
           { name: 'channel', type: 'string', required: false, default: '' },
           { name: 'days', type: 'number', required: false, default: 7 },
           { name: 'limit', type: 'number', required: false, default: 20 },
           { name: 'withNames', type: 'boolean', required: false, default: true },
+          { name: 'pages', type: 'number', required: false, default: 0 },
+          { name: 'cursor', type: 'string', required: false, default: '' },
+          { name: 'threads', type: 'boolean', required: false, default: true },
         ],
         returnType: 'RecentResult',
-        run: (query, channel, days, limit, withNames) => {
+        run: (query, channel, days, limit, withNames, pages, cursor, threads) => {
           const terms = (typeof query === 'string' ? query : '')
             .trim()
             .toLowerCase()
@@ -2835,7 +2876,7 @@ it notifies nobody else.`,
           if (terms.length === 0) {
             throw new Error('there is nothing to look for');
           }
-          const back = Math.min(Math.max(Math.trunc(days), 1), 90);
+          const back = Math.min(Math.max(Math.trunc(days), 1), 365);
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 200);
           const oldest = Math.floor(Date.now() / 1000) - back * 86400;
 
@@ -2860,6 +2901,14 @@ it notifies nobody else.`,
 
           const complete = reading.length <= SCANNED;
           reading = reading.slice(0, SCANNED);
+          /* One channel named is the case that reads deep, pages on and threads opened. */
+          const named = asked.length > 0 && reading.length === 1;
+          const pageCap =
+            Math.min(Math.max(Math.trunc(Number(pages) || 0), 0), PAGES_MOST) || (named ? PAGES_NAMED : PAGES_ACROSS);
+          const carryOn = named && typeof cursor === 'string' ? cursor.trim() : '';
+          const openThreads = named && threads !== false;
+          let nextCursor = null;
+          let threadsRead = 0;
 
           const base = workspaceUrl(this.settings);
           const matches = [];
@@ -2867,54 +2916,113 @@ it notifies nobody else.`,
           let whole = complete;
           const refusals = [];
 
+          /* A message worth keeping, from history or from inside a thread. */
+          const keep = (where, one, threadTs) => {
+            if (NOISE.includes(at(one, 'subtype'))) {
+              return;
+            }
+            const text = at(one, 'text');
+            if (!carries(text, terms)) {
+              return;
+            }
+            const ts = at(one, 'ts');
+            const link =
+              base === null || typeof ts !== 'string'
+                ? null
+                : `${base}/archives/${where.id}/p${ts.replace('.', '')}` +
+                  (threadTs === null ? '' : `?thread_ts=${threadTs}&cid=${where.id}`);
+            matches.push({
+              channel: where.id,
+              channelName: where.name,
+              ts: ts,
+              threadTs: threadTs,
+              user: at(one, 'user') ?? at(one, 'username'),
+              text: text,
+              permalink: link,
+            });
+          };
+
           for (const where of reading) {
-            let messages;
-            try {
-              messages = slackApi(this.settings, 'conversations.history', {
-                channel: where.id,
-                oldest: String(oldest),
-                limit: String(PAGE),
-              });
-            } catch (thrown) {
-              /*
-               * One channel refusing is not the scan failing - a private
-               * channel needs `groups:history` where a public one needs
-               * `channels:history`, and a workspace may have granted one and
-               * not the other. Every refusal is kept, and they are only
-               * thrown if nothing at all could be read.
-               */
-              refusals.push(`${where.name ?? where.id}: ${thrown.message}`);
-              whole = false;
+            let atCursor = carryOn;
+            let refused = false;
+            const parents = [];
+            for (let page = 0; page < pageCap; page += 1) {
+              let messages;
+              try {
+                messages = slackApi(this.settings, 'conversations.history', {
+                  channel: where.id,
+                  oldest: String(oldest),
+                  limit: String(PAGE),
+                  ...(atCursor.length > 0 ? { cursor: atCursor } : {}),
+                });
+              } catch (thrown) {
+                /*
+                 * One channel refusing is not the scan failing - a private
+                 * channel needs `groups:history` where a public one needs
+                 * `channels:history`, and a workspace may have granted one and
+                 * not the other. Every refusal is kept, and they are only
+                 * thrown if nothing at all could be read.
+                 */
+                refusals.push(`${where.name ?? where.id}: ${thrown.message}`);
+                whole = false;
+                refused = true;
+                break;
+              }
+
+              const held = at(messages, 'messages') ?? [];
+              read += held.length;
+              for (const one of held) {
+                keep(where, one, null);
+                if (openThreads && Number(at(one, 'reply_count') ?? 0) > 0) {
+                  parents.push(at(one, 'ts'));
+                }
+              }
+
+              /* More behind this page than was read, and where it carries on from. */
+              const more = at(messages, 'has_more') === true;
+              const next = at(at(messages, 'response_metadata'), 'next_cursor');
+              atCursor = more && typeof next === 'string' ? next : '';
+              if (more && atCursor.length === 0) {
+                whole = false;
+              }
+              if (atCursor.length === 0) {
+                break;
+              }
+            }
+            if (refused) {
               continue;
             }
-
-            const held = at(messages, 'messages') ?? [];
-            read += held.length;
-            /* More behind this page than the window asked for. */
-            if (at(messages, 'has_more') === true) {
+            if (atCursor.length > 0) {
               whole = false;
+              if (named) {
+                nextCursor = atCursor;
+              }
             }
 
-            for (const one of held) {
-              if (NOISE.includes(at(one, 'subtype'))) {
+            /* And inside the threads, whose replies history never answers. */
+            for (const parent of parents.slice(0, THREADS_READ)) {
+              let replies;
+              try {
+                replies = slackApi(this.settings, 'conversations.replies', {
+                  channel: where.id,
+                  ts: parent,
+                  limit: String(PAGE),
+                });
+              } catch (thrown) {
+                whole = false;
                 continue;
               }
-              const text = at(one, 'text');
-              if (!carries(text, terms)) {
-                continue;
+              threadsRead += 1;
+              for (const one of at(replies, 'messages') ?? []) {
+                if (at(one, 'ts') === parent) {
+                  continue;
+                }
+                read += 1;
+                keep(where, one, parent);
               }
-              const ts = at(one, 'ts');
-              matches.push({
-                channel: where.id,
-                channelName: where.name,
-                ts: ts,
-                user: at(one, 'user') ?? at(one, 'username'),
-                text: text,
-                permalink:
-                  base === null || typeof ts !== 'string'
-                    ? null
-                    : `${base}/archives/${where.id}/p${ts.replace('.', '')}`,
-              });
+            }
+            if (parents.length > THREADS_READ) {
+              whole = false;
             }
           }
 
@@ -2938,6 +3046,8 @@ it notifies nobody else.`,
             messages: read,
             since: new Date(oldest * 1000).toISOString(),
             complete: whole && matches.length <= capped,
+            nextCursor: nextCursor,
+            threadsRead: threadsRead,
           };
         },
       }),

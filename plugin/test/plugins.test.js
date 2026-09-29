@@ -2916,3 +2916,103 @@ test('a default is of the type its parameter declared', async () => {
   }
 });
 
+
+/*
+ * Asked for: "can it search piece by piece?" - the agent had to say no, because
+ * findRecent read one page of 200 and stopped, and never opened a thread. With
+ * one channel named it now pages on with Slack's cursor, answers nextCursor
+ * where there is more, carries on from a cursor it is handed, and reads the
+ * replies inside threads.
+ */
+test('slack findRecent reads a named channel page after page, inside threads, and carries on from a cursor', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  /* Three pages behind two cursors; the middle page holds a thread. */
+  const pages = {
+    '': {
+      ok: true,
+      has_more: true,
+      response_metadata: { next_cursor: 'c2' },
+      messages: [{ ts: '1700000300.000100', user: 'U1', text: 'Flash wysylki are late again' }],
+    },
+    c2: {
+      ok: true,
+      has_more: true,
+      response_metadata: { next_cursor: 'c3' },
+      messages: [{ ts: '1700000200.000100', user: 'U2', text: 'status of the courier', reply_count: 2 }],
+    },
+    c3: {
+      ok: true,
+      has_more: false,
+      messages: [{ ts: '1700000100.000100', user: 'U3', text: 'first flash wysylki report' }],
+    },
+  };
+  const thread = {
+    ok: true,
+    messages: [
+      { ts: '1700000200.000100', user: 'U2', text: 'status of the courier' },
+      { ts: '1700000210.000100', user: 'U4', text: 'the Flash wysylki label is broken' },
+      { ts: '1700000220.000100', user: 'U5', text: 'thanks' },
+    ],
+  };
+
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  let first;
+  let rest;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      const method = what.url.slice('https://slack.com/api/'.length);
+      if (method === 'users.conversations') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+      }
+      if (method === 'auth.test') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+      }
+      if (method === 'conversations.history') {
+        const cursor = (/cursor=([^&]+)/.exec(what.body) ?? [null, ''])[1];
+        return { status: 200, headers: {}, body: '{}', json: pages[cursor] };
+      }
+      if (method === 'conversations.replies') {
+        return { status: 200, headers: {}, body: '{}', json: thread };
+      }
+      throw new Error(`the test was not expecting ${method}`);
+    };
+
+    // Two pages asked for: the first two, then a cursor to carry on with.
+    first = call('findRecent').run('flash wysylki', '#bos-team', 30, 20, false, 2, '', true);
+    rest = call('findRecent').run('flash wysylki', '#bos-team', 30, 20, false, 2, first.nextCursor, true);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  /* The top-level match, and the reply inside the thread, which history never answers. */
+  assert.deepEqual(
+    first.matches.map((one) => one.text),
+    ['Flash wysylki are late again', 'the Flash wysylki label is broken'],
+  );
+  const reply = first.matches.find((one) => one.threadTs !== null);
+  assert.equal(reply.threadTs, '1700000200.000100');
+  assert.equal(
+    reply.permalink,
+    'https://acme.slack.com/archives/C1/p1700000210000100?thread_ts=1700000200.000100&cid=C1',
+  );
+  assert.equal(first.threadsRead, 1);
+
+  /* More behind it, said so, and where to carry on from. */
+  assert.equal(first.nextCursor, 'c3');
+  assert.equal(first.complete, false);
+
+  /* The next piece, read from that cursor, to the end of the window. */
+  assert.deepEqual(rest.matches.map((one) => one.text), ['first flash wysylki report']);
+  assert.equal(rest.nextCursor, null);
+  const histories = asked.filter((one) => one.url.endsWith('conversations.history'));
+  assert.equal(histories.length, 3, 'two pages, then one more from the cursor');
+  assert.match(histories[2].body, /cursor=c3/);
+});
