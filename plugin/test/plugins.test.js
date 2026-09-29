@@ -3170,3 +3170,52 @@ test('slack findRecent matches like a search: diacritics, word forms, phrases, O
   /* And one left out. */
   assert.deepEqual(answered.not, ['U1', 'U5']);
 });
+
+/*
+ * Asked for: "can the agent skip days, to search even deeper?" days counted
+ * back from now and stopped at a year; skipDays moves the window back, so
+ * older history is searched a window at a time.
+ */
+test('slack findRecent searches a window moved back by skipDays', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  const bodies = [];
+  const door = globalThis.orknux.http.request;
+  let found;
+  let now;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      const method = what.url.slice('https://slack.com/api/'.length);
+      if (method === 'users.conversations') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+      }
+      if (method === 'auth.test') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+      }
+      if (method === 'conversations.history') {
+        bodies.push(what.body);
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, has_more: false, messages: [] } };
+      }
+      throw new Error(`the test was not expecting ${method}`);
+    };
+    now = Math.floor(Date.now() / 1000);
+    found = call('findRecent').run('flash', '#bos-team', 30, 20, false, 1, '', false, 365);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  const latest = Number(/latest=(\d+)/.exec(bodies[0])[1]);
+  const oldest = Number(/oldest=(\d+)/.exec(bodies[0])[1]);
+  const day = 86400;
+  /* The window ends a year ago, and is thirty days long. */
+  assert.ok(Math.abs(latest - (now - 365 * day)) < 60, `latest ${latest} is not a year ago`);
+  assert.equal(latest - oldest, 30 * day);
+  /* And the answer says where it was. */
+  assert.equal(found.until, new Date(latest * 1000).toISOString());
+  assert.equal(found.since, new Date(oldest * 1000).toISOString());
+});

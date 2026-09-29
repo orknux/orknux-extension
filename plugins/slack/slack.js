@@ -1448,6 +1448,7 @@ export default class Slack extends OrknuxPlugin {
           { name: 'channels', kind: 'number', description: 'How many channels were read.' },
           { name: 'messages', kind: 'number', description: 'How many messages were looked at to find them.' },
           { name: 'since', kind: 'string', description: 'The oldest moment read, as ISO 8601.' },
+          { name: 'until', kind: 'string', description: 'The newest moment of the window, as ISO 8601 - now, unless skipDays moved it back.' },
           {
             name: 'complete',
             kind: 'boolean',
@@ -2981,9 +2982,11 @@ it notifies nobody else.`,
           'and the replies inside threads as well as their first messages - a reply that matches says ' +
           'its threadTs. Where there is more behind what was read - older history, or threads it had no ' +
           'room to open - it answers nextCursor and says which in incompleteBecause: pass nextCursor as ' +
-          'cursor, with the same channel, query and days, to carry on from there, and keep going until ' +
-          'nextCursor is null to have searched the whole window piece by piece. days goes back a year ' +
-          'at most.',
+          'cursor, with the same channel, query, days and skipDays, to carry on from there, and keep going ' +
+          'until nextCursor is null to have searched the whole window piece by piece. days is how long the ' +
+          'window is, a year at most, and skipDays moves it back: days 30 with skipDays 365 reads the month ' +
+          'that ended a year ago. Search older history window by window that way, as far back as the ' +
+          'workspace keeps it - a free Slack workspace shows only its last 90 days.',
         params: [
           { name: 'query', type: 'string' },
           { name: 'channel', type: 'string', required: false, default: '' },
@@ -2993,16 +2996,25 @@ it notifies nobody else.`,
           { name: 'pages', type: 'number', required: false, default: 0 },
           { name: 'cursor', type: 'string', required: false, default: '' },
           { name: 'threads', type: 'boolean', required: false, default: true },
+          { name: 'skipDays', type: 'number', required: false, default: 0 },
         ],
         returnType: 'RecentResult',
-        run: (query, channel, days, limit, withNames, pages, cursor, threads) => {
+        run: (query, channel, days, limit, withNames, pages, cursor, threads, skipDays) => {
           const groups = parsedQuery(typeof query === 'string' ? query : '');
           if (groups.length === 0 || groups.every((group) => group.must.length === 0)) {
             throw new Error('there is nothing to look for');
           }
           const back = Math.min(Math.max(Math.trunc(days), 1), 365);
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 200);
-          const oldest = Math.floor(Date.now() / 1000) - back * 86400;
+          /*
+           * The window, which need not end now. Asked for: "can the agent skip
+           * days, to search even deeper?" - days counted back from today and
+           * stopped at a year. skipDays moves the window back, so older history
+           * is searched a window at a time, as deep as Slack keeps it.
+           */
+          const skipped = Math.max(Math.trunc(Number(skipDays) || 0), 0);
+          const latest = Math.floor(Date.now() / 1000) - skipped * 86400;
+          const oldest = latest - back * 86400;
 
           /*
            * What the bot is in, which is both the list to read and the fence
@@ -3093,6 +3105,7 @@ it notifies nobody else.`,
                 messages = slackApi(this.settings, 'conversations.history', {
                   channel: where.id,
                   oldest: String(oldest),
+                  ...(skipped > 0 ? { latest: String(latest) } : {}),
                   limit: String(PAGE),
                   ...(atCursor.length > 0 ? { cursor: atCursor } : {}),
                 });
@@ -3203,6 +3216,7 @@ it notifies nobody else.`,
             channels: reading.length - refusals.length,
             messages: read,
             since: new Date(oldest * 1000).toISOString(),
+            until: new Date(latest * 1000).toISOString(),
             complete: whole && matches.length <= capped,
             incompleteBecause:
               [...reasons, ...(matches.length > capped ? [`${matches.length} matched and ${capped} are shown`] : [])].join(
