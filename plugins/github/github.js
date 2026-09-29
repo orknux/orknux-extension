@@ -664,6 +664,24 @@ Use it for "use the existing helper in lib/ rather than writing a new one" or
 "the tests fail, look at the timezone handling". One clear instruction at a
 time; a comment containing five requests gets partially done.
 
+## Fixing a pull request Copilot or you opened
+
+When a pull request that Copilot opened - one you started with
+\`github_createAgentTask\`, or one it opened for somebody else - needs a fix,
+send the fix to that session: \`github_messageAgentTask\` on **that** pull
+request's number. A review comment to address, a bug found in its diff, a
+failing check, a change somebody asked for: all of them go there.
+
+**Do not open a new pull request for it**, and do not start a new task with
+\`github_createAgentTask\`. Either puts the fix on a branch of its own: the
+original PR still has the problem, a second PR holds the answer, and somebody
+has to work out which to merge and in what order. The session that wrote the
+change has its context and its branch; the fix belongs inside it.
+
+Check who opened it first: the pull request's author is Copilot's bot account,
+or it is the PR \`github_agentTask\` names for a task you started. For a pull
+request a person opened, say what needs fixing on the PR instead - it is theirs.
+
 ## Before you accept it
 
 It opened a draft PR, which means review it like any other — the previous

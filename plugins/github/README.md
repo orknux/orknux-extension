@@ -217,7 +217,9 @@ and a condition reads `.overall` instead of indexing into JSON.
 anything about it.
 
 **"Working with the Copilot coding agent"** — starting a task, following it,
-and steering it without losing it.
+and steering it without losing it. A fix to a pull request Copilot opened goes
+to that pull request's session with `messageAgentTask`, never to a new PR or a
+new task.
 
 **"Getting a pull request build green"**, id `autofix-build` — waiting for a
 PR's checks with `finish_answer`'s `wake_after_ms` rather than polling, reading
