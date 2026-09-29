@@ -1347,6 +1347,13 @@ export default class Slack extends OrknuxPlugin {
               'days, for the next piece. Null when the window was read to its end.',
           },
           { name: 'threadsRead', kind: 'number', description: 'How many threads were opened to read their replies.' },
+          {
+            name: 'incompleteBecause',
+            kind: 'string',
+            description:
+              'Why complete is false, in words to repeat rather than guess: more history, threads not ' +
+              'opened yet, a channel refused, more matches than limit. Null when it is complete.',
+          },
         ],
       }),
 
@@ -2852,7 +2859,8 @@ it notifies nobody else.`,
           'one lookup per distinct author among the matches shown. With one channel named it reads ' +
           'further: pages of 200 messages each (five unless pages says otherwise, twenty at most), ' +
           'and the replies inside threads as well as their first messages - a reply that matches says ' +
-          'its threadTs. Where there is more behind what was read it answers nextCursor: pass that as ' +
+          'its threadTs. Where there is more behind what was read - older history, or threads it had no ' +
+          'room to open - it answers nextCursor and says which in incompleteBecause: pass nextCursor as ' +
           'cursor, with the same channel, query and days, to carry on from there, and keep going until ' +
           'nextCursor is null to have searched the whole window piece by piece. days goes back a year ' +
           'at most.',
@@ -2905,10 +2913,27 @@ it notifies nobody else.`,
           const named = asked.length > 0 && reading.length === 1;
           const pageCap =
             Math.min(Math.max(Math.trunc(Number(pages) || 0), 0), PAGES_MOST) || (named ? PAGES_NAMED : PAGES_ACROSS);
-          const carryOn = named && typeof cursor === 'string' ? cursor.trim() : '';
+          /*
+           * A cursor carries on through history, or - spelled threads:<ts>:<cursor> -
+           * through the threads a call found and had no room to open: the same
+           * pages are read again, only threads older than <ts> are opened, and
+           * nothing already answered is answered twice. Reported: 2,257
+           * messages read to the end, more than thirty threads in them, and
+           * nothing to carry on with - so the agent said the rest was out of reach.
+           */
+          const handed = named && typeof cursor === 'string' ? cursor.trim() : '';
+          const threadsOnly = handed.startsWith('threads:');
+          const spelled = threadsOnly ? handed.slice('threads:'.length) : '';
+          const threadsAfter = threadsOnly ? spelled.split(':')[0] : '';
+          const carryOn = threadsOnly ? spelled.slice(threadsAfter.length + 1) : handed;
           const openThreads = named && threads !== false;
           let nextCursor = null;
           let threadsRead = 0;
+          /* Why the answer is not the whole window, in words the agent can repeat. */
+          const reasons = [];
+          if (!complete) {
+            reasons.push(`the bot is in more than ${SCANNED} channels and only ${SCANNED} were read - name one`);
+          }
 
           const base = workspaceUrl(this.settings);
           const matches = [];
@@ -2964,6 +2989,7 @@ it notifies nobody else.`,
                  * thrown if nothing at all could be read.
                  */
                 refusals.push(`${where.name ?? where.id}: ${thrown.message}`);
+                reasons.push(`${where.name ?? where.id} could not be read: ${thrown.message}`);
                 whole = false;
                 refused = true;
                 break;
@@ -2972,8 +2998,12 @@ it notifies nobody else.`,
               const held = at(messages, 'messages') ?? [];
               read += held.length;
               for (const one of held) {
-                keep(where, one, null);
-                if (openThreads && Number(at(one, 'reply_count') ?? 0) > 0) {
+                // Carrying on through threads, what these pages say was answered last time.
+                if (!threadsOnly) {
+                  keep(where, one, null);
+                }
+                const opened = Number(at(one, 'reply_count') ?? 0) > 0;
+                if (openThreads && opened && (!threadsOnly || Number(at(one, 'ts')) < Number(threadsAfter))) {
                   parents.push(at(one, 'ts'));
                 }
               }
@@ -2984,6 +3014,7 @@ it notifies nobody else.`,
               atCursor = more && typeof next === 'string' ? next : '';
               if (more && atCursor.length === 0) {
                 whole = false;
+                reasons.push(`${where.name ?? where.id} has more history than Slack would page through`);
               }
               if (atCursor.length === 0) {
                 break;
@@ -2992,15 +3023,9 @@ it notifies nobody else.`,
             if (refused) {
               continue;
             }
-            if (atCursor.length > 0) {
-              whole = false;
-              if (named) {
-                nextCursor = atCursor;
-              }
-            }
-
             /* And inside the threads, whose replies history never answers. */
-            for (const parent of parents.slice(0, THREADS_READ)) {
+            const opening = parents.slice(0, THREADS_READ);
+            for (const parent of opening) {
               let replies;
               try {
                 replies = slackApi(this.settings, 'conversations.replies', {
@@ -3010,6 +3035,7 @@ it notifies nobody else.`,
                 });
               } catch (thrown) {
                 whole = false;
+                reasons.push(`a thread at ${parent} could not be read: ${thrown.message}`);
                 continue;
               }
               threadsRead += 1;
@@ -3021,8 +3047,24 @@ it notifies nobody else.`,
                 keep(where, one, parent);
               }
             }
+            /*
+             * Threads left unopened first, then older history: carrying on
+             * through the threads re-reads these same pages, so the history
+             * cursor rides along and is handed on once they are done.
+             */
             if (parents.length > THREADS_READ) {
               whole = false;
+              const left = parents.length - THREADS_READ;
+              reasons.push(`${left} of the threads read were not opened yet - carry on with nextCursor`);
+              if (named) {
+                nextCursor = `threads:${opening[opening.length - 1]}:${carryOn}`;
+              }
+            } else if (atCursor.length > 0) {
+              whole = false;
+              reasons.push('there is older history in the window - carry on with nextCursor');
+              if (named) {
+                nextCursor = atCursor;
+              }
             }
           }
 
@@ -3046,6 +3088,10 @@ it notifies nobody else.`,
             messages: read,
             since: new Date(oldest * 1000).toISOString(),
             complete: whole && matches.length <= capped,
+            incompleteBecause:
+              [...reasons, ...(matches.length > capped ? [`${matches.length} matched and ${capped} are shown`] : [])].join(
+                '; ',
+              ) || null,
             nextCursor: nextCursor,
             threadsRead: threadsRead,
           };

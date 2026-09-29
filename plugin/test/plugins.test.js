@@ -3016,3 +3016,83 @@ test('slack findRecent reads a named channel page after page, inside threads, an
   assert.equal(histories.length, 3, 'two pages, then one more from the cursor');
   assert.match(histories[2].body, /cursor=c3/);
 });
+
+/*
+ * Reported: findRecent read a channel's whole window, 2,257 messages, found
+ * more than thirty threads, opened thirty, and answered complete: false with
+ * nextCursor null - so the agent said the rest was out of reach and blamed a
+ * missing scope. Threads it had no room to open are now carried on with a
+ * cursor, and the answer says why it is incomplete.
+ */
+test('slack findRecent carries on through the threads it had no room to open', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  /* One page, the whole window: a matching message and 31 threads, newest first. */
+  const parents = Array.from({ length: 31 }, (_, at) => `17000${String(99 - at).padStart(2, '0')}000.000100`);
+  const history = {
+    ok: true,
+    has_more: false,
+    messages: [
+      { ts: '1700099999.000100', user: 'U1', text: 'flash wysylki kickoff' },
+      ...parents.map((ts) => ({ ts: ts, user: 'U2', text: 'a thread', reply_count: 1 })),
+    ],
+  };
+  const repliesOf = (ts) => ({
+    ok: true,
+    messages: [
+      { ts: ts, user: 'U2', text: 'a thread' },
+      // Only the oldest thread, the one the first call has no room for, mentions it.
+      { ts: `${ts.slice(0, -6)}500100`, user: 'U3', text: ts === parents[30] ? 'flash wysylki is fixed' : 'ok' },
+    ],
+  });
+
+  const opened = [];
+  const door = globalThis.orknux.http.request;
+  let first;
+  let rest;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      const method = what.url.slice('https://slack.com/api/'.length);
+      if (method === 'users.conversations') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+      }
+      if (method === 'auth.test') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+      }
+      if (method === 'conversations.history') {
+        return { status: 200, headers: {}, body: '{}', json: history };
+      }
+      if (method === 'conversations.replies') {
+        const ts = decodeURIComponent(/ts=([^&]+)/.exec(what.body)[1]);
+        opened.push(ts);
+        return { status: 200, headers: {}, body: '{}', json: repliesOf(ts) };
+      }
+      throw new Error(`the test was not expecting ${method}`);
+    };
+
+    first = call('findRecent').run('flash wysylki', '#bos-team', 100, 20, false, 20, '', true);
+    rest = call('findRecent').run('flash wysylki', '#bos-team', 100, 20, false, 20, first.nextCursor, true);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  /* Thirty opened, the window read to its end, and a cursor into the thirty-first. */
+  assert.equal(first.threadsRead, 30);
+  assert.equal(first.complete, false);
+  assert.match(first.incompleteBecause, /1 of the threads read were not opened yet/);
+  assert.match(first.nextCursor, /^threads:/);
+  assert.deepEqual(first.matches.map((one) => one.text), ['flash wysylki kickoff']);
+
+  /* Carried on: only the thread left, nothing answered twice, and done. */
+  assert.deepEqual(rest.matches.map((one) => one.text), ['flash wysylki is fixed']);
+  assert.equal(rest.threadsRead, 1);
+  assert.equal(rest.nextCursor, null);
+  assert.equal(rest.complete, true);
+  assert.equal(rest.incompleteBecause, null);
+  assert.equal(opened.length, 31, 'every thread opened exactly once across the two calls');
+});
