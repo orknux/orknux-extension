@@ -42,6 +42,24 @@ export default class Declaring extends OrknuxPlugin {
         connectionType: 'SLACK',
         required: false,
       }),
+      new OrknuxParameter({
+        name: 'host',
+        description: 'A parameter one of its own kinds of host fills.',
+        type: 'connection',
+        connectionType: 'server',
+        required: false,
+      }),
+    ];
+  }
+
+  connectionTypes() {
+    return [
+      {
+        name: 'server',
+        label: 'A server',
+        description: 'A kind of host with everything filled in.',
+        urlPlaceholder: 'https://server.example.com',
+      },
     ];
   }
 

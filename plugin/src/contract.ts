@@ -2,6 +2,7 @@ import { PROPERTY_KINDS, TYPE_BASES } from './limits.js';
 import type {
   OrknuxActionDeclaration,
   OrknuxCapability,
+  OrknuxConnectionTypeDeclaration,
   OrknuxFunctionDeclaration,
   OrknuxFunctionInstance,
   OrknuxFunctionToolDeclaration,
@@ -648,6 +649,21 @@ declare abstract class OrknuxPluginContract {
    * anything else under `result`.
    */
   actions(): OrknuxActionDeclaration[];
+
+  /**
+   * The kinds of host this plugin talks to, each `{ name, label, description,
+   * urlPlaceholder }`, so a workspace can hold several connections of each -
+   * two Prometheus servers, two wikis - labelled by the plugin rather than all
+   * reading as "HTTP". Defaults to none, and is not on the sandbox's class:
+   * the loader asks only a plugin that has it.
+   *
+   * Each is an HTTP connection - a URL, an auth kind, a secret, headers -
+   * wearing the plugin's label. A `connection` parameter naming one by its
+   * bare name is offered only those, and receives the connection's `url`,
+   * `authType`, `secret` and `headers` with the handle: the plugin is the only
+   * thing that knows how to talk to its own kind of host.
+   */
+  connectionTypes?(): OrknuxConnectionTypeDeclaration[];
 
   /**
    * What a workspace set those parameters to, keyed by name.

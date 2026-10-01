@@ -99,6 +99,17 @@ test('every optional field a plugin may declare survives being inspected', async
       outputs: [{ name: 'count', type: 'number', description: 'How many arrived.' }],
     },
   ]);
+
+  /* A kind of host, and a parameter naming it by its bare name. */
+  assert.deepEqual(seen.connectionTypes, [
+    {
+      name: 'server',
+      label: 'A server',
+      description: 'A kind of host with everything filled in.',
+      urlPlaceholder: 'https://server.example.com',
+    },
+  ]);
+  assert.equal(seen.parameters.find((one) => one.name === 'host').connectionType, 'server');
 });
 
 test('no field is declared in the contract that inspect has no line for', async () => {

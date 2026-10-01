@@ -53,6 +53,14 @@ test('the report names the workflow actions a plugin offers, label first', () =>
   );
 });
 
+test('the report names the kinds of connection a plugin declares, by the id a connection stores', () => {
+  const report = checked(shipped('prometheus'));
+
+  assert.match(report, /It declares these kinds of connection:/);
+  assert.match(report, /Prometheus {2}\(prometheus\/prometheus\)/);
+  assert.match(report, /connection to prometheus/);
+});
+
 test('the report names the skills a plugin brings, and what each is for', () => {
   const report = checked(shipped('github'));
 

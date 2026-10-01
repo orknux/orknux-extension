@@ -50,10 +50,14 @@ type ConnectionType = 'SLACK' | 'SMTP' | 'HTTP';
 /**
  * A connection the workspace configured, handed to a plugin as a handle.
  *
- * An id and a type and nothing else. A plugin cannot open a socket — the
- * sandbox has no network and no permission can ask for one — so what crosses is
- * a name for a connection the server will use on the plugin's behalf, never the
- * connection itself and never its credential.
+ * For a connection the server speaks to on the plugin's behalf — Slack, mail
+ * — an id and a type and nothing else: never the connection itself and never
+ * its credential.
+ *
+ * A host of one of the plugin's own kinds — one `connectionTypes()` declares
+ * — crosses with what reaching it takes: `url`, `authType`, `secret` and the
+ * `headers` to send. Nothing but the plugin knows how to talk to it, and it
+ * does so over `orknux.http` under `NETWORK_REQUEST`.
  *
  * The type parameter is what makes `SlackConnection` mean something: it appears
  * as a member, so a Jira connection is not assignable where a Slack one is
@@ -63,6 +67,16 @@ type ConnectionType = 'SLACK' | 'SMTP' | 'HTTP';
 declare class OrknuxConnection<T extends ConnectionType> {
   readonly id: number;
   readonly type: T;
+  /** Which of a plugin's declared kinds this is, as `key/name`. */
+  readonly pluginType?: string;
+  /** Where the host is. Only on a host of the plugin's own kind. */
+  readonly url?: string;
+  /** How it authenticates. Only on a host of the plugin's own kind. */
+  readonly authType?: 'NONE' | 'API_KEY' | 'BEARER_TOKEN' | 'BASIC';
+  /** The credential as stored; absent where there is none. */
+  readonly secret?: string;
+  /** Every header to send, the credential's Authorization among them. */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** A Slack connection, which is what the Slack helpers take. */
@@ -802,9 +816,11 @@ interface OrknuxParameterDeclared {
    *
    * What arrives in `settings` is then an `OrknuxConnection<T>` — an id and a
    * type, never the connection's credential. The sandbox has no network; the
-   * server makes the call.
+   * server makes the call. One of the plugin's own `connectionTypes()`, named
+   * by its bare name, is the exception: it arrives with its address and
+   * credential, because the plugin is what talks to it.
    */
-  connectionType?: ConnectionType;
+  connectionType?: ConnectionType | (string & {});
   /**
    * The values this may take, where the plugin knows them all.
    *
@@ -942,6 +958,16 @@ declare abstract class OrknuxPlugin {
    * declares, anything else under `result`. Throw to fail the step.
    */
   actions(): OrknuxAction[];
+
+  /**
+   * The kinds of host this plugin talks to, so a workspace can hold several
+   * connections of each — two Prometheus servers, two wikis — labelled by
+   * you rather than all reading as "HTTP". Each is an HTTP connection (a URL,
+   * an auth kind, a secret) wearing your label; a `connection` parameter may
+   * then name one of these to be offered only your own hosts, and receives
+   * the connection's address and credential with it. Defaults to none.
+   */
+  connectionTypes?(): OrknuxConnectionType[];
 
   /**
    * What a workspace set those parameters to, keyed by name.
@@ -1120,8 +1146,19 @@ declare class OrknuxParameter {
   readonly type: OrknuxParameterType;
   readonly required: boolean;
   readonly secret: boolean;
-  readonly connectionType: ConnectionType | null;
+  readonly connectionType: string | null;
   readonly options: readonly string[] | null;
+}
+
+/** A kind of host a plugin declares; see `connectionTypes()`. */
+interface OrknuxConnectionType {
+  /** An identifier, stable: it becomes part of what a connection stores. */
+  name: string;
+  /** What a person reads on the type menu and the connection list. */
+  label: string;
+  description?: string;
+  /** What the URL box shows before anything is typed, e.g. 'https://prometheus.example.com'. */
+  urlPlaceholder?: string;
 }
 
 /**

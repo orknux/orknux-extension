@@ -8,6 +8,7 @@ import { MAX_SOURCE_BYTES } from './limits.js';
 import type {
   DeclaredAction,
   DeclaredActionParam,
+  DeclaredConnectionType,
   DeclaredFunction,
   DeclaredObject,
   DeclaredParam,
@@ -57,6 +58,7 @@ export interface Inspection extends Declaration {
   objects: DeclaredObject[];
   types: DeclaredType[];
   actions: DeclaredAction[];
+  connectionTypes: DeclaredConnectionType[];
   file: string;
   bytes: number;
   /** The digest the server will store, so the two can be compared. */
@@ -253,6 +255,17 @@ export async function inspect(file: string): Promise<Inspection> {
   }
   const actions = offeredToWorkflows.map((one) => readAction(one as Record<string, unknown>));
 
+  /*
+   * The kinds of host it talks to. Asked only of a plugin that has the method,
+   * as the loader asks: the sandbox's class carries no default, so a plugin
+   * written before these existed is read as declaring none.
+   */
+  const hosts = typeof held['connectionTypes'] === 'function' ? answer('connectionTypes') : [];
+  if (!Array.isArray(hosts)) {
+    throw new NotAPluginError('connectionTypes() did not answer with an array');
+  }
+  const connectionTypes = hosts.map((one) => readConnectionType(one as Record<string, unknown>));
+
   return {
     id: id.trim(),
     apiVersion,
@@ -266,6 +279,7 @@ export async function inspect(file: string): Promise<Inspection> {
     objects,
     types,
     actions,
+    connectionTypes,
     file,
     bytes: source.byteLength,
     sha256,
@@ -387,6 +401,15 @@ function readType(declared: Record<string, unknown>): DeclaredType {
     parameters: asked.map((one) => readParameter(one as Record<string, unknown>)),
     suggests: typeof declared['suggest'] === 'function',
     validates: typeof declared['validate'] === 'function',
+  };
+}
+
+function readConnectionType(declared: Record<string, unknown>): DeclaredConnectionType {
+  return {
+    name: text(declared, 'name') ?? refuse('a connection type has no name'),
+    label: text(declared, 'label') ?? refuse('a connection type has no label'),
+    description: text(declared, 'description') ?? null,
+    urlPlaceholder: text(declared, 'urlPlaceholder') ?? null,
   };
 }
 

@@ -95,6 +95,11 @@ export default class Probe extends OrknuxPlugin {
     ];
   }
 
+  // A kind of host of its own, whose connections cross with their address.
+  connectionTypes(): OrknuxConnectionType[] {
+    return [{ name: 'server', label: 'A server', urlPlaceholder: 'https://server.example.com' }];
+  }
+
   // The fourth surface: an action handed its wired inputs as one object, and
   // the plugin's settings on the context rather than on `this`.
   actions(): OrknuxAction[] {

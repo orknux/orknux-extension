@@ -278,6 +278,15 @@ test('and a plugin that declares neither still answers with empty lists', () => 
   assert.deepEqual(made.actions(), []);
 });
 
+test('definePlugin carries the kinds of host a plugin declares', () => {
+  const made = new (definePlugin({
+    id: 'prometheus',
+    connectionTypes: [{ name: 'prometheus', label: 'Prometheus' }],
+  }))();
+  assert.deepEqual(made.connectionTypes().map((one) => one.name), ['prometheus']);
+  assert.deepEqual(new (definePlugin({ id: 'bare' }))().connectionTypes(), []);
+});
+
 /* The fourth surface: a plain object with a run, refused where it is written when the run is missing. */
 test('definePlugin carries actions, and refuses one with nothing to run', () => {
   const respond = {

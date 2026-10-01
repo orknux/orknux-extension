@@ -11,12 +11,23 @@
  *
  * ## Setting one up
  *
- * 1. Load this plugin and accept TEXT_ENCODING and NETWORK_REQUEST.
- * 2. Set `url` to the server's root — `http://prometheus:9090`, or wherever
- *    the installation's proxy rules allow the server to reach.
- * 3. A bare Prometheus needs nothing more. One behind auth takes `token` — sent
- *    as a Bearer token on its own, or as Basic `username:token` when `username`
- *    is set, which is how a Grafana Cloud endpoint is spoken to.
+ * 1. Load this plugin and accept NETWORK_REQUEST.
+ * 2. Add a connection of the kind it declares, Prometheus, with the server's
+ *    root as its URL — `http://prometheus:9090`, or wherever the
+ *    installation's proxy rules allow the server to reach.
+ * 3. A bare Prometheus needs no auth. One behind a token takes Bearer; a
+ *    Grafana Cloud endpoint takes Basic with `instanceId:token` as the secret.
+ * 4. Point the plugin's `prometheus` parameter at that connection.
+ *
+ * ## Why a connection and not three settings
+ *
+ * The address and the credential used to be the plugin's own parameters, so a
+ * workspace had exactly one Prometheus and its token sat on the plugin's page.
+ * A connection is where a workspace already keeps hosts: encrypted, checked,
+ * one row per server — and a kind of its own keeps the picker to Prometheus
+ * servers rather than every HTTP endpoint there is. Because the kind is this
+ * plugin's, the server hands its address and headers across with the handle;
+ * nothing but this plugin knows how to speak to it.
  *
  * Licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
@@ -31,33 +42,42 @@ function at(holder, name) {
   return held === undefined ? null : held;
 }
 
-/** The server's root, without its trailing slash. */
-function root(settings) {
-  const configured = settings.url;
-  if (typeof configured !== 'string' || configured.length === 0) {
-    throw new Error("the plugin's url parameter is not set, and every Prometheus call needs it");
+/**
+ * The connection the workspace pointed this plugin at, with its address.
+ *
+ * Only a connection of this plugin's own kind crosses with `url` and
+ * `headers`; anything else arrives as a bare handle. So a handle without a url
+ * is a connection this plugin cannot use - a plain HTTP one, or a server old
+ * enough to hand every connection over as a name only - and saying which is
+ * kinder than a request to `undefined/api/v1/...`.
+ */
+function server(settings) {
+  const connection = settings.prometheus;
+  if (connection === undefined || connection === null) {
+    throw new Error("the plugin's prometheus parameter is not set, and every Prometheus call needs it");
   }
-  return configured.endsWith('/') ? configured.slice(0, -1) : configured;
+  if (typeof connection.url !== 'string' || connection.url.length === 0) {
+    throw new Error(
+      "the prometheus parameter names a connection that is not a Prometheus connection of this plugin's " +
+        'kind, so its address never reached the plugin - point it at a Prometheus connection, on a server ' +
+        'that hands one over',
+    );
+  }
+  return connection;
 }
 
-/** The headers a call goes out with: json asked for, and whichever auth the parameters describe. */
-function headers(settings) {
-  const built = { accept: 'application/json' };
-  const token = settings.token;
-  const username = settings.username;
-  if (typeof username === 'string' && username.length > 0) {
-    if (typeof token !== 'string' || token.length === 0) {
-      throw new Error('a username is set but no token to go with it');
-    }
-    const pair = orknux.encoding.encodeBase64(`${username}:${token}`);
-    if (pair.error !== undefined) {
-      throw new Error(`could not encode the credential: ${pair.error}`);
-    }
-    built.authorization = 'Basic ' + pair.base64;
-  } else if (typeof token === 'string' && token.length > 0) {
-    built.authorization = 'Bearer ' + token;
-  }
-  return built;
+/** The server's root, without its trailing slash. */
+function root(connection) {
+  return connection.url.endsWith('/') ? connection.url.slice(0, -1) : connection.url;
+}
+
+/**
+ * The headers a call goes out with: json asked for, and whatever the
+ * connection says to send - its credential already spelled for its auth kind,
+ * so Basic, Bearer and an API key are the connection's business, not this.
+ */
+function headers(connection) {
+  return Object.assign({ accept: 'application/json' }, connection.headers ?? {});
 }
 
 /**
@@ -68,7 +88,8 @@ function headers(settings) {
  * proxy in front can turn anything into a 200.
  */
 function read(settings, path) {
-  const answered = orknux.http.get(root(settings) + path, headers(settings));
+  const connection = server(settings);
+  const answered = orknux.http.get(root(connection) + path, headers(connection));
   if (answered.error !== undefined) {
     throw new Error(`could not reach Prometheus: ${answered.error}`);
   }
@@ -91,43 +112,43 @@ export default class Prometheus extends OrknuxPlugin {
     return 1;
   }
 
+  /*
+   * The kind of host this plugin talks to, so a workspace can hold several
+   * Prometheus servers by name rather than one url on the plugin's page.
+   */
+  connectionTypes() {
+    return [
+      {
+        name: 'prometheus',
+        label: 'Prometheus',
+        description:
+          'A Prometheus server to query - or anything speaking its HTTP API, such as Grafana Cloud or Thanos.',
+        urlPlaceholder: 'http://prometheus:9090',
+      },
+    ];
+  }
+
   parameters() {
     return [
       new OrknuxParameter({
-        name: 'url',
-        description: 'The server\'s root, e.g. http://prometheus:9090.',
-        type: 'string',
+        name: 'prometheus',
+        description: 'Which Prometheus to ask: a Prometheus connection, which carries its address and auth.',
+        type: 'connection',
+        connectionType: 'prometheus',
         required: true,
-      }),
-      new OrknuxParameter({
-        name: 'username',
-        description:
-          'Set only where the server wants Basic auth - a Grafana Cloud instance id, ' +
-          'say - with the token as the password.',
-        type: 'string',
-        required: false,
-      }),
-      new OrknuxParameter({
-        name: 'token',
-        description:
-          'A Bearer token on its own, the Basic password beside a username, ' +
-          'or empty for a Prometheus that asks nothing.',
-        type: 'string',
-        required: false,
-        secret: true,
       }),
     ];
   }
 
   permissions() {
-    // None. Turning `username:token` into base64 is `orknux.encoding`'s job now,
-    // and that is ungranted — it reaches nothing, the way a digest does not.
+    // None. The credential arrives already spelled as a header, so there is
+    // nothing left here to encode.
     return [];
   }
 
   capabilities() {
     // The widest capability there is, asked for because this plugin is about
-    // exactly one outside service: every request goes to the url above.
+    // exactly one outside service: every request goes to the connection's url.
     return ['NETWORK_REQUEST'];
   }
 

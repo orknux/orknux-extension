@@ -9,6 +9,7 @@ import { API_VERSION, PLUGIN_ID } from './limits.js';
 import type {
   OrknuxActionDeclaration,
   OrknuxCapability,
+  OrknuxConnectionTypeDeclaration,
   OrknuxFunctionDeclaration,
   OrknuxFunctionInstance,
   OrknuxFunctionToolDeclaration,
@@ -168,6 +169,14 @@ export interface OrknuxPluginSpec {
    * that offers only functions, which is every one written before this.
    */
   actions?: readonly OrknuxActionDeclaration[];
+
+  /**
+   * The kinds of host it talks to, so a workspace can hold several of each by
+   * name. A `connection` parameter naming one by its bare name receives the
+   * connection's address and credential with the handle. Leave it out for a
+   * plugin that reaches no host of its own.
+   */
+  connectionTypes?: readonly OrknuxConnectionTypeDeclaration[];
 }
 
 /**
@@ -206,6 +215,7 @@ export function definePlugin(spec: OrknuxPluginSpec): OrknuxPluginConstructor {
   const exported = spec.objects === undefined ? [] : [...spec.objects];
   const defined = spec.types === undefined ? [] : [...spec.types];
   const offeredToWorkflows = spec.actions === undefined ? [] : [...spec.actions];
+  const hosts = spec.connectionTypes === undefined ? [] : [...spec.connectionTypes];
 
   /*
    * Checked here rather than left to the upload: a plugin that declares one name
@@ -311,6 +321,10 @@ export function definePlugin(spec: OrknuxPluginSpec): OrknuxPluginConstructor {
 
     override actions(): OrknuxActionDeclaration[] {
       return offeredToWorkflows.slice();
+    }
+
+    override connectionTypes(): OrknuxConnectionTypeDeclaration[] {
+      return hosts.slice();
     }
   };
 }

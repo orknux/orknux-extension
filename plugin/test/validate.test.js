@@ -7,6 +7,7 @@ import {
   validate,
   validateActions,
   validateCapabilities,
+  validateConnectionTypes,
   validateFunctions,
   validateParameters,
   validatePermissions,
@@ -472,6 +473,47 @@ test("an action's parameters and outputs are held to the action type list, named
       'the action respond\'s ts is a "none", and an output is one of string, number, boolean, array, object, map',
     ],
   );
+});
+
+/*
+ * A kind of host a plugin declares, and the one thing it changes elsewhere: a
+ * connection parameter may name it, by the bare name, beside the core kinds.
+ * The rules are the upload's, from `PluginDeclarations.validatedConnectionTypes`
+ * and `validatedParameters`.
+ */
+test('a connection parameter may name a kind of host its own plugin declares', () => {
+  const problems = validate({
+    id: 'prometheus',
+    apiVersion: 1,
+    functions: [],
+    connectionTypes: [{ name: 'prometheus', label: 'Prometheus' }],
+    parameters: [{ name: 'prometheus', type: 'connection', connectionType: 'prometheus' }],
+  });
+  assert.deepEqual(problems, []);
+});
+
+test('and not one it does not, which is named among the kinds it could have been', () => {
+  const problems = validateParameters(
+    [{ name: 'server', type: 'connection', connectionType: 'grafana' }],
+    [{ name: 'prometheus', label: 'Prometheus' }],
+  );
+  assert.deepEqual(problems.map((one) => one.message), [
+    'the parameter server is a connection but does not say which kind. ' +
+      'It has to name one of SLACK, SMTP, HTTP, prometheus.',
+  ]);
+});
+
+test('a kind of host needs a usable name, declared once, and a label', () => {
+  const problems = validateConnectionTypes([
+    { name: 'a server', label: 'Server' },
+    { name: 'prometheus', label: 'Prometheus' },
+    { name: 'prometheus', label: '  ' },
+  ]);
+  assert.deepEqual(problems.map((one) => one.message), [
+    '"a server" is not a usable connection type name',
+    'it declares the connection type prometheus more than once',
+    'the connection type prometheus has no label',
+  ]);
 });
 
 test('the same action twice is refused', () => {

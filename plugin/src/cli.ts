@@ -247,6 +247,21 @@ async function report(file: string): Promise<number> {
     }
   }
 
+  /*
+   * The kinds of host it brings, by the id a connection will store - the key
+   * joined on, as the server joins it - because that id is what a workspace's
+   * connections are tagged with and what renaming one would orphan.
+   */
+  if (inspected.connectionTypes.length > 0) {
+    process.stdout.write('\n  It declares these kinds of connection:\n');
+    for (const kind of inspected.connectionTypes) {
+      process.stdout.write(`    ${kind.label}  (${inspected.id}/${kind.name})\n`);
+      if (kind.description !== null && kind.description !== undefined) {
+        process.stdout.write(`        ${kind.description}\n`);
+      }
+    }
+  }
+
   if (inspected.parameters.length > 0) {
     process.stdout.write('\n  It has to be told:\n');
     for (const parameter of inspected.parameters) {

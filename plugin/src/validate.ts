@@ -7,6 +7,7 @@ import {
   LIBRARY_PATH,
   MAX_ACTIONS,
   MAX_ACTION_PARAMETERS,
+  MAX_CONNECTION_TYPES,
   MAX_FUNCTIONS,
   MAX_LIBRARIES,
   MAX_LIBRARY_PATH_LENGTH,
@@ -134,6 +135,16 @@ export interface Declaration {
   types?: DeclaredType[];
   /** The workflow actions it offers; optional for the same reason. */
   actions?: DeclaredAction[];
+  /** The kinds of host it talks to; optional for the same reason. */
+  connectionTypes?: DeclaredConnectionType[];
+}
+
+/** One kind of host a plugin declares, as it reaches the loader. */
+export interface DeclaredConnectionType {
+  name: string;
+  label: string;
+  description?: string | null;
+  urlPlaceholder?: string | null;
 }
 
 /** One instruction set a plugin brings, as it reaches the loader. */
@@ -209,7 +220,8 @@ export interface Problem {
     | 'skills'
     | 'objects'
     | 'types'
-    | 'actions';
+    | 'actions'
+    | 'connectionTypes';
   message: string;
 }
 
@@ -247,7 +259,7 @@ export function validate(declared: Declaration): Problem[] {
     ...validateApiVersion(declared.apiVersion),
     ...validateFunctions(declared.functions, declared.objects ?? []),
     ...validateTools(declared.tools ?? [], declared.functions, declared.objects ?? []),
-    ...validateParameters(declared.parameters ?? []),
+    ...validateParameters(declared.parameters ?? [], declared.connectionTypes ?? []),
     ...validatePermissions(declared.permissions ?? []),
     ...validateCapabilities(declared.capabilities ?? []),
     ...validateLibraries(declared.libraries ?? []),
@@ -255,7 +267,43 @@ export function validate(declared: Declaration): Problem[] {
     ...validateObjects(declared.objects ?? []),
     ...validateTypes(declared.types ?? []),
     ...validateActions(declared.actions ?? []),
+    ...validateConnectionTypes(declared.connectionTypes ?? []),
   ];
+}
+
+/**
+ * The kinds of host a plugin declares, held to what the loader holds them to.
+ *
+ * The wording is the upload's, from `PluginDeclarations.validatedConnectionTypes`
+ * and the bound `PluginRunner` reads under: a usable name declared once, and a
+ * label. The name is half of the id a connection stores, so it has to be an
+ * identifier that will not need renaming.
+ */
+export function validateConnectionTypes(declared: DeclaredConnectionType[]): Problem[] {
+  const problems: Problem[] = [];
+  const refuse = (message: string): void => {
+    problems.push({ part: 'connectionTypes', message });
+  };
+
+  if (declared.length > MAX_CONNECTION_TYPES) {
+    refuse(`connectionTypes() declared more than ${MAX_CONNECTION_TYPES} connection types`);
+    return problems;
+  }
+
+  const names = new Set<string>();
+  for (const kind of declared) {
+    const name = typeof kind?.name === 'string' ? kind.name.trim() : '';
+    if (!IDENTIFIER.test(name)) {
+      refuse(`"${String(kind?.name)}" is not a usable connection type name`);
+      continue;
+    }
+    if (names.has(name)) refuse(`it declares the connection type ${name} more than once`);
+    names.add(name);
+
+    const label = typeof kind.label === 'string' ? kind.label.trim() : '';
+    if (label.length === 0) refuse(`the connection type ${name} has no label`);
+  }
+  return problems;
 }
 
 /**
@@ -872,8 +920,18 @@ export function validateTools(
  * that is neither typed in nor read from a variable: it points at a row the
  * workspace already has, so it is checked on its own terms and never against
  * the scalar types.
+ *
+ * @param ownKinds the connection kinds this same plugin declares, which a
+ *   `connection` parameter may name beside the core ones - by the bare name,
+ *   matched exactly, as the upload matches it.
  */
-export function validateParameters(declared: DeclaredParameter[]): Problem[] {
+export function validateParameters(
+  declared: DeclaredParameter[],
+  ownKinds: readonly DeclaredConnectionType[] = [],
+): Problem[] {
+  const own = ownKinds
+    .map((kind) => (typeof kind?.name === 'string' ? kind.name.trim() : ''))
+    .filter((name) => name.length > 0);
   const problems: Problem[] = [];
   const refuse = (message: string): void => {
     problems.push({ part: 'parameters', message });
@@ -898,19 +956,20 @@ export function validateParameters(declared: DeclaredParameter[]): Problem[] {
     const connectionType = parameter.connectionType ?? null;
 
     if (parameter.type.trim().toLowerCase() === CONNECTION) {
-      if (!isConnectionType(connectionType)) {
+      const ownKind = connectionType !== null && own.includes(connectionType.trim());
+      if (!isConnectionType(connectionType) && !ownKind) {
         refuse(
           `the parameter ${name} is a connection but does not say which kind. ` +
-            `It has to name one of ${CONNECTION_TYPES.join(', ')}.`,
+            `It has to name one of ${[...CONNECTION_TYPES, ...own].join(', ')}.`,
         );
       }
       if (parameter.secret === true) {
         /*
          * Refused rather than ignored, as the upload refuses it: a connection
          * parameter holds no secret — it names a row, and the credential on
-         * that row is decrypted on the far side of the sandbox and never
-         * crosses it — so a plugin marking one secret has misunderstood what
-         * it is being given.
+         * that row is kept and encrypted with the connection, crossing only
+         * for a host of the plugin's own kind — so a plugin marking one secret
+         * has misunderstood what it is being given.
          */
         refuse(
           `the parameter ${name} is a connection and cannot be a secret: it names a ` +

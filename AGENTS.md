@@ -46,7 +46,7 @@ Five files mirror the server, and drift in any of them is a broken promise:
 |-----------------------|-------------------------------------------|
 | `src/contract.ts`     | `PluginRunner.CONTRACT`, `HostHelpers`    |
 | `src/inspect.ts`      | `PluginRunner.read`                       |
-| `src/validate.ts`     | `PluginDeclarations.validated`, `validatedTools` and `validatedParameters`, `PluginPermissions`, `PluginCapabilities` |
+| `src/validate.ts`     | `PluginDeclarations.validated`, `validatedTools`, `validatedParameters` and `validatedConnectionTypes`, `PluginPermissions`, `PluginCapabilities` |
 | `src/limits.ts`       | `PluginApiVersions`, `PluginUploadAPI`, `PluginRunner`, `PluginPermission`, `PluginCapability`, `ConnectionType` |
 | `types/globals.d.ts`  | the TypeScript template `PluginUploadAPI` serves |
 

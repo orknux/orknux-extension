@@ -34,10 +34,17 @@ export type OrknuxParameterType = (typeof PARAMETER_TYPES)[number] | typeof CONN
 /**
  * A connection the workspace configured, as it arrives in `settings`.
  *
- * An id and a type and nothing else. A plugin cannot open a socket — the sandbox
- * has no network and no permission can ask for one — so what crosses is a name
- * for a connection the server will use on the plugin's behalf, never the
- * connection itself and never its credential.
+ * For a connection the server speaks to on the plugin's behalf — Slack, mail —
+ * an id and a type and nothing else: a name for something the server will use,
+ * never the connection itself and never its credential.
+ *
+ * A host of one of the plugin's own kinds — one `connectionTypes()` declares —
+ * crosses with what reaching it takes: `url`, `authType`, `secret` and the
+ * `headers` to send. Nothing but the plugin knows how to talk to a Prometheus,
+ * and it does so over `orknux.http` under `NETWORK_REQUEST`, so the connection
+ * is where that credential is kept — encrypted, chosen per workspace — and
+ * this is where it is handed over. A connection wearing another plugin's kind
+ * stays a handle.
  *
  * The type parameter is what makes "a Slack connection" mean something: it
  * appears as a member, so a mismatched kind is caught where it is written rather
@@ -48,6 +55,46 @@ export interface OrknuxConnectionHandle<
 > {
   readonly id: number;
   readonly type: Type;
+  /** Which of a plugin's declared kinds this is, as `key/name`. */
+  readonly pluginType?: string;
+  /** Where the host is. Only on a host of the plugin's own kind. */
+  readonly url?: string;
+  /** How it authenticates. Only on a host of the plugin's own kind. */
+  readonly authType?: OrknuxConnectionAuthType;
+  /** The credential as stored; absent where there is none. Only on a host of the plugin's own kind. */
+  readonly secret?: string;
+  /**
+   * Every header to send, the credential's `Authorization` among them — so a
+   * plugin need not know how each auth kind is spelled. Only on a host of the
+   * plugin's own kind.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** How a connection authenticates. `AuthType` in orknux-server. */
+export type OrknuxConnectionAuthType = 'NONE' | 'API_KEY' | 'BEARER_TOKEN' | 'BASIC';
+
+/**
+ * A kind of host a plugin declares, so a workspace can hold several of it by
+ * name — two Prometheus servers, two wikis — rather than every one reading as
+ * "HTTP".
+ *
+ * Only the name and how to present it: the connection keeps the generic HTTP
+ * shape — a URL, an auth kind, a secret, headers — which is what a host needs.
+ * A plain object rather than a constructor, like an action: the server judges
+ * the shape when the plugin is loaded.
+ */
+export interface OrknuxConnectionTypeDeclaration {
+  /**
+   * An identifier, stable: joined to the plugin's key it is what a connection
+   * stores — `prometheus/prometheus` — so renaming it orphans every one.
+   */
+  name: string;
+  /** What a person reads on the type menu and the connection list. */
+  label: string;
+  description?: string;
+  /** What the URL box shows before anything is typed, e.g. `https://prometheus.example.com`. */
+  urlPlaceholder?: string;
 }
 
 /**
@@ -311,11 +358,12 @@ export interface OrknuxParameterDeclaration {
   /**
    * Which kind of connection, and required when `type` is `'connection'`.
    *
-   * It narrows the picker to the connections the plugin can actually use, and
-   * what then arrives in `settings` is a handle — an id and a type, never the
-   * connection's credential.
+   * It narrows the picker to the connections the plugin can actually use. A
+   * core kind arrives in `settings` as a handle — an id and a type, never the
+   * connection's credential; one of the plugin's own `connectionTypes()`, named
+   * by its bare name, arrives with its address and credential too.
    */
-  connectionType?: OrknuxConnectionType;
+  connectionType?: OrknuxConnectionType | (string & {});
 }
 
 /**

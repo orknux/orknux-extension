@@ -168,6 +168,12 @@ export const MAX_TYPES = 20;
 export const MAX_TYPE_PARAMETERS = 10;
 
 /**
+ * Kinds of host a plugin may declare. Each is a row on every workspace's
+ * connection-type menu. `MAX_CONNECTION_TYPES` in `PluginRunner`.
+ */
+export const MAX_CONNECTION_TYPES = 20;
+
+/**
  * Workflow actions a plugin may declare. Every one is a row in the editor's
  * action picker for every workspace, and a plugin offering more than this is a
  * menu rather than a plugin. `MAX_ACTIONS` in `PluginRunner`.

@@ -2675,12 +2675,16 @@ test('the prometheus plugin declares what the server would accept', async () => 
   assert.equal(inspected.id, 'prometheus');
   assert.deepEqual(validate(inspected), []);
 
+  /* One connection of its own kind, carrying the address and auth three settings used to. */
   assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.name),
-    ['url', 'username', 'token'],
+    inspected.connectionTypes.map((kind) => kind.name),
+    ['prometheus'],
   );
-  assert.equal(inspected.parameters[2].secret, true);
-  /* None: `orknux.encoding` turns the credential into base64, and is ungranted. */
+  assert.deepEqual(
+    inspected.parameters.map((parameter) => [parameter.name, parameter.type, parameter.connectionType]),
+    [['prometheus', 'connection', 'prometheus']],
+  );
+  /* None: the credential arrives already spelled as a header. */
   assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
