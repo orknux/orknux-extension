@@ -9,7 +9,7 @@
     "project-management"
   ],
   "summary": "Find issues by JQL, open one whole, comment, move it through its workflow, and raise new ones.",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }

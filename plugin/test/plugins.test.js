@@ -1574,27 +1574,59 @@ test('confluence turns the ids a page mentions into people, on either deployment
   }
 });
 
+/*
+ * A Jira connection as the server hands one to the plugin that declared its
+ * kind: the handle, plus the address and the headers to send. Cloud is the
+ * one authenticating with Basic, Server the one sending a Bearer token.
+ */
+const cloudJira = Object.freeze({
+  id: 1,
+  type: 'HTTP',
+  pluginType: 'jira/jira',
+  url: 'https://x.atlassian.net',
+  authType: 'BASIC',
+  secret: 'a@b.c:t',
+  headers: Object.freeze({ Authorization: 'Basic ' + Buffer.from('a@b.c:t').toString('base64') }),
+});
+const serverJira = Object.freeze({
+  id: 2,
+  type: 'HTTP',
+  pluginType: 'jira/jira',
+  url: 'https://jira.example.com',
+  authType: 'BEARER_TOKEN',
+  secret: 't',
+  headers: Object.freeze({ Authorization: 'Bearer t' }),
+});
+
 test('the jira plugin declares what the server would accept', async () => {
   const inspected = await inspect(shipped('jira'));
 
   assert.equal(inspected.id, 'jira');
   assert.deepEqual(validate(inspected), []);
 
+  /* One connection of its own kind, carrying the address and auth three settings used to. */
   assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.name),
-    ['url', 'email', 'token', 'project'],
+    inspected.connectionTypes.map((kind) => kind.name),
+    ['jira'],
   );
-  /* The token is the one secret; the rest are plain settings. */
+  assert.deepEqual(
+    inspected.parameters.map((parameter) => [parameter.name, parameter.type, parameter.connectionType ?? null]),
+    [
+      ['jira', 'connection', 'jira'],
+      ['project', 'string', null],
+    ],
+  );
+  /* No secret of its own any more: the credential lives on the connection. */
   assert.deepEqual(
     inspected.parameters.map((parameter) => parameter.secret),
-    [false, false, true, false],
+    [false, false],
   );
   assert.deepEqual(
     inspected.parameters.map((parameter) => parameter.required),
-    [true, false, true, false],
+    [true, false],
   );
 
-  /* None: `orknux.encoding` turns the credential into base64, and is ungranted. */
+  /* None: the credential arrives already spelled as a header. */
   assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
@@ -1663,8 +1695,8 @@ test('jira createIssue resolves a project\'s own fields against its form', async
     const functions = plugin.functions();
     return (name) => functions.find((one) => one.name === name);
   };
-  const cloud = configured({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't', project: 'OKO' });
-  const server = configured({ url: 'https://jira.example.com', token: 't', project: 'OKO' });
+  const cloud = configured({ jira: cloudJira, project: 'OKO' });
+  const server = configured({ jira: serverJira, project: 'OKO' });
 
   /*
    * The form a project like the one this was written for actually has: two
@@ -1816,7 +1848,7 @@ test('jira updateIssue sets fields on an issue that exists, against its own edit
   const { default: Jira } = await import(url.href);
   const plugin = Object.create(Jira.prototype);
   Object.defineProperty(plugin, 'settings', {
-    value: Object.freeze({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't' }),
+    value: Object.freeze({ jira: cloudJira }),
   });
   const update = plugin.functions().find((one) => one.name === 'updateIssue');
 
@@ -1915,7 +1947,7 @@ test('jira link says the relation as a verb, and openIssue reads links from its 
   const { default: Jira } = await import(url.href);
   const plugin = Object.create(Jira.prototype);
   Object.defineProperty(plugin, 'settings', {
-    value: Object.freeze({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't' }),
+    value: Object.freeze({ jira: cloudJira }),
   });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
@@ -2026,8 +2058,8 @@ test('jira timeLogged answers every day of a range, and last week when given non
     const functions = plugin.functions();
     return (name) => functions.find((one) => one.name === name);
   };
-  const cloud = configured({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't' });
-  const server = configured({ url: 'https://jira.example.com', token: 't' });
+  const cloud = configured({ jira: cloudJira });
+  const server = configured({ jira: serverJira });
 
   assert.throws(() => cloud('timeLogged').run('', '', ''), /no user to read time for/);
   assert.throws(() => cloud('timeLogged').run('me', '2026-9-1', ''), /from should be a date as YYYY-MM-DD/);
@@ -2130,7 +2162,7 @@ test('jira groupMembers lists a team by the id the other calls take', async () =
   const { default: Jira } = await import(url.href);
   const plugin = Object.create(Jira.prototype);
   Object.defineProperty(plugin, 'settings', {
-    value: Object.freeze({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't' }),
+    value: Object.freeze({ jira: cloudJira }),
   });
   const members = plugin.functions().find((one) => one.name === 'groupMembers');
   assert.throws(() => members.run('  '), /no group to list/);
@@ -2171,7 +2203,7 @@ test('a jira refusal names every field, not the first', async () => {
   const { default: Jira } = await import(url.href);
   const plugin = Object.create(Jira.prototype);
   Object.defineProperty(plugin, 'settings', {
-    value: Object.freeze({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't', project: 'OKO' }),
+    value: Object.freeze({ jira: cloudJira, project: 'OKO' }),
   });
   const create = plugin.functions().find((one) => one.name === 'createIssue');
 
@@ -2214,20 +2246,21 @@ test('a jira call says what is missing, and picks its search endpoint by deploym
   assert.throws(() => configured({})('createIssue').run('', 'Task', '', ''), /needs a summary/);
 
   /* Then the settings, each named. */
-  assert.throws(() => configured({})('search').run('project = PROJ', 0), /url parameter is not set/);
+  assert.throws(() => configured({})('search').run('project = PROJ', 0), /jira parameter is not set/);
+  /* A connection that is not of the plugin's own kind arrives without its address. */
   assert.throws(
-    () => configured({ url: 'https://x.atlassian.net' })('search').run('project = PROJ', 0),
-    /token parameter is not set/,
+    () => configured({ jira: { id: 3, type: 'HTTP' } })('search').run('project = PROJ', 0),
+    /not a Jira connection of this plugin's kind/,
   );
   /* A create with no project and no default says so rather than guessing one. */
   assert.throws(
-    () => configured({ url: 'https://x.atlassian.net', token: 't' })('createIssue').run('', 'Task', 'A thing', ''),
+    () => configured({ jira: cloudJira })('createIssue').run('', 'Task', 'A thing', ''),
     /no project was passed and no default project is configured/,
   );
 
   /*
    * And the split that matters, watched rather than inferred: Cloud — which is
-   * what having an email to send means — must ask the only search endpoint it
+   * what a connection authenticating with Basic means — must ask the only search endpoint it
    * has left, because Atlassian removed the other one in 2025. Server still
    * has v2. The request is caught on its way out to see which was chosen, and
    * to see that the two authentication schemes differ with it.
@@ -2239,9 +2272,9 @@ test('a jira call says what is missing, and picks its search endpoint by deploym
     return { status: 200, headers: {}, body: '{}', json: { issues: [] } };
   };
   try {
-    configured({ url: 'https://x.atlassian.net', email: 'a@b.c', token: 't' })('search')
+    configured({ jira: cloudJira })('search')
       .run('project = PROJ', 10);
-    configured({ url: 'https://jira.example.com', token: 't' })('search')
+    configured({ jira: serverJira })('search')
       .run('project = PROJ', 10);
   } finally {
     globalThis.orknux.http.request = door;
@@ -2255,19 +2288,15 @@ test('a jira call says what is missing, and picks its search endpoint by deploym
   assert.equal(onCloud.method, 'POST');
   assert.equal(onCloud.body.jql, 'project = PROJ');
   assert.ok(Array.isArray(onCloud.body.fields) && onCloud.body.fields.includes('summary'));
-  assert.match(onCloud.headers.authorization, /^Basic /);
+  assert.match(onCloud.headers.Authorization, /^Basic /);
+  /* Json still asked for beside whatever the connection sends. */
+  assert.equal(onCloud.headers.accept, 'application/json');
 
   /* Server: the GET that has always been there, and a bearer token. */
   assert.match(onServer.url, /^https:\/\/jira\.example\.com\/rest\/api\/2\/search\?jql=/);
   assert.match(onServer.url, /maxResults=10/);
   assert.equal(onServer.method, 'GET');
-  assert.equal(onServer.headers.authorization, 'Bearer t');
-
-  /* The Basic credential is the pair, encoded — base64 written out longhand. */
-  assert.equal(
-    Buffer.from(onCloud.headers.authorization.slice('Basic '.length), 'base64').toString('utf8'),
-    'a@b.c:t',
-  );
+  assert.equal(onServer.headers.Authorization, 'Bearer t');
 });
 
 test('the jenkins plugin declares what the server would accept', async () => {

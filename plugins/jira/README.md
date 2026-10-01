@@ -154,18 +154,29 @@ and `hasDefault`.
 
 ## Setting one up
 
-1. Load this plugin and accept `TEXT_ENCODING` and `NETWORK_REQUEST`.
-2. Set `url` to the site root — `https://your-site.atlassian.net` for Cloud, or
-   the base url of a Server install.
-3. Put the credential in a workspace variable and point `token` at it. For
-   Cloud that is an API token and `email` must say whose it is; for Server it is
-   a personal access token and `email` stays empty.
-4. Optionally set `project`, the key new issues belong to unless a call names
+1. Load this plugin and accept `NETWORK_REQUEST`.
+2. Add a connection of the kind it brings, **Jira**, with the site root as its
+   URL — `https://your-site.atlassian.net` for Cloud, or the base url of a
+   Server install.
+3. For Cloud, authenticate with Basic and `email:token` as the secret — an API
+   token and whose it is. For Server or Data Center, a Bearer personal access
+   token.
+4. Point the plugin's `jira` parameter at that connection.
+5. Optionally set `project`, the key new issues belong to unless a call names
    one.
 
-That `email` setting is the same signal the confluence plugin uses, because it
-is the same company's two products — and here it also picks the search
-endpoint, which is the one place Cloud and Server genuinely differ.
+The connection's auth kind is the same signal the confluence plugin uses,
+because it is the same company's two products: Basic means Cloud, Bearer means
+Server. Here it also picks the search endpoint, which is the one place the two
+genuinely differ.
+
+The address and the credential live on the connection rather than on the
+plugin's page, so they are kept encrypted, and a workspace can hold as many
+Jira sites as it has.
+
+Coming from 0.9: the `url`, `email` and `token` parameters are gone. Make a
+Jira connection from them — Basic with `email:token` as the secret for Cloud,
+Bearer with the personal access token for Server — and point `jira` at it.
 
 ## Why v2 everywhere except search
 
@@ -180,7 +191,7 @@ of 2025 — they answer 410 now — leaving `POST /rest/api/3/search/jql`, which
 bounded: it wants an explicit field list, it pages by a cursor rather than an
 offset, and it does not answer a total at all. Server and Data Center still have
 v2 search and still answer a total. So `search` picks its endpoint by the same
-`email` setting, and `total` comes back null on Cloud rather than invented.
+auth kind, and `total` comes back null on Cloud rather than invented.
 
 Should an instance ever hand back Atlassian Document Format where v2 used to
 answer text, the tree is walked for its text rather than shown to a caller as

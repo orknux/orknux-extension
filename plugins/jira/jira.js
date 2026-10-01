@@ -11,14 +11,13 @@
  * by the *server* on the plugin's behalf, under the NETWORK_REQUEST capability
  * a person accepted, against the Jira the workspace named.
  *
- * ## Cloud or Server, decided by `email`
+ * ## Cloud or Server, decided by the connection's auth kind
  *
  * The same rule the confluence plugin uses, because it is the same company's
- * two products: `email` set means Atlassian Cloud, and the token is sent as
- * Basic `email:token`; `email` empty means Server or Data Center, and the
- * token goes as a Bearer personal access token. That one setting is also what
- * picks the search endpoint below, which is the one place the two genuinely
- * differ.
+ * two products: a connection authenticating with Basic is Atlassian Cloud, its
+ * secret `email:token`; one sending a Bearer token is Server or Data Center,
+ * its secret a personal access token. That one choice is also what picks the
+ * search endpoint below, which is the one place the two genuinely differ.
  *
  * ## Why v2 everywhere except search
  *
@@ -33,8 +32,8 @@
  * which is bounded: it wants an explicit field list, it pages by a cursor
  * rather than an offset, and it does not answer a total at all. Server and
  * Data Center still have v2 search and still answer a total. So `search` picks
- * its endpoint by the same `email` setting, and `total` comes back null on
- * Cloud rather than invented.
+ * its endpoint by the same auth kind, and `total` comes back null on Cloud
+ * rather than invented.
  *
  * ## The fields a project adds
  *
@@ -55,14 +54,25 @@
  *
  * ## Setting one up
  *
- * 1. Load this plugin and accept TEXT_ENCODING and NETWORK_REQUEST.
- * 2. Set `url` to the site root — `https://your-site.atlassian.net` for Cloud,
- *    or the base url of a Server install.
- * 3. Put the credential in one of the workspace's variables and point `token`
- *    at it. For Cloud that is an API token and `email` must say whose it is;
- *    for Server it is a personal access token and `email` stays empty.
- * 4. Set `project` to the key new issues belong to unless a call says
+ * 1. Load this plugin and accept NETWORK_REQUEST.
+ * 2. Add a connection of the kind it declares, Jira, with the site root as its
+ *    URL — `https://your-site.atlassian.net` for Cloud, or the base url of a
+ *    Server install.
+ * 3. For Cloud, authenticate with Basic and `email:token` as the secret — an
+ *    API token and whose it is. For Server, a Bearer personal access token.
+ * 4. Point the plugin's `jira` parameter at that connection.
+ * 5. Set `project` to the key new issues belong to unless a call says
  *    otherwise — optional, and one fewer thing to wire.
+ *
+ * ## Why a connection and not three settings
+ *
+ * The address and the credential used to be the plugin's own parameters, so a
+ * workspace had exactly one Jira and its token sat on the plugin's page. A
+ * connection is where a workspace already keeps hosts: encrypted, checked, one
+ * row per site — and a kind of its own keeps the picker to Jira sites rather
+ * than every HTTP endpoint there is. Because the kind is this plugin's, the
+ * server hands its address and headers across with the handle; nothing but
+ * this plugin knows how to speak to it.
  *
  * Licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
@@ -122,39 +132,48 @@ function plainOf(value) {
   return said.join('').trim();
 }
 
+/**
+ * The connection the workspace pointed this plugin at, with its address.
+ *
+ * Only a connection of this plugin's own kind crosses with `url` and
+ * `headers`; anything else arrives as a bare handle. So a handle without a url
+ * is a connection this plugin cannot use - a plain HTTP one, or a server old
+ * enough to hand every connection over as a name only - and saying which is
+ * kinder than a request to `undefined/rest/api/...`.
+ */
+function site(settings) {
+  const connection = settings.jira;
+  if (connection === undefined || connection === null) {
+    throw new Error("the plugin's jira parameter is not set, and every Jira call needs it");
+  }
+  if (typeof connection.url !== 'string' || connection.url.length === 0) {
+    throw new Error(
+      "the jira parameter names a connection that is not a Jira connection of this plugin's " +
+        'kind, so its address never reached the plugin - point it at a Jira connection, on a server ' +
+        'that hands one over',
+    );
+  }
+  return connection;
+}
+
 /** The site root, without its trailing slash. */
 function root(settings) {
-  const configured = settings.url;
-  if (typeof configured !== 'string' || configured.length === 0) {
-    throw new Error("the plugin's url parameter is not set, and every Jira call needs it");
-  }
-  return configured.endsWith('/') ? configured.slice(0, -1) : configured;
+  const url = site(settings).url;
+  return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
-/** Whether this is Atlassian Cloud, which is what having an email to send means. */
+/** Whether this is Atlassian Cloud, which is what a connection authenticating with Basic means. */
 function isCloud(settings) {
-  return typeof settings.email === 'string' && settings.email.length > 0;
+  return site(settings).authType === 'BASIC';
 }
 
-/** The authorization header: Basic for Cloud, Bearer for Server. */
-function authorization(settings) {
-  const token = settings.token;
-  if (typeof token !== 'string' || token.length === 0) {
-    throw new Error("the plugin's token parameter is not set, and every Jira call needs it");
-  }
-  if (isCloud(settings)) {
-    /*
-     * `orknux.encoding` rather than a hand-rolled alphabet and a TextEncoder:
-     * the server does the UTF-8 and the base64, so this plugin needs no
-     * permission to turn a string into its own bytes.
-     */
-    const pair = orknux.encoding.encodeBase64(`${settings.email}:${token}`);
-    if (pair.error !== undefined) {
-      throw new Error(`could not encode the credential: ${pair.error}`);
-    }
-    return 'Basic ' + pair.base64;
-  }
-  return 'Bearer ' + token;
+/**
+ * The headers a call goes out with: json asked for, and whatever the
+ * connection says to send - its credential already spelled for its auth kind,
+ * so Basic and Bearer are the connection's business, not this.
+ */
+function headers(settings) {
+  return Object.assign({ accept: 'application/json' }, site(settings).headers ?? {});
 }
 
 /** One call to Jira, authenticated, answered or thrown. */
@@ -162,7 +181,7 @@ function call(settings, asked) {
   const answered = orknux.http.request({
     url: root(settings) + asked.path,
     method: asked.method === undefined ? 'GET' : asked.method,
-    headers: { accept: 'application/json', authorization: authorization(settings) },
+    headers: headers(settings),
     body: asked.body,
   });
   if (answered.error !== undefined) {
@@ -572,27 +591,13 @@ export default class Jira extends OrknuxPlugin {
   parameters() {
     return [
       new OrknuxParameter({
-        name: 'url',
+        name: 'jira',
         description:
-          'The site root: https://your-site.atlassian.net for Cloud, ' +
-          'or the base url of a Server install.',
-        type: 'string',
+          'Which Jira to ask: a Jira connection, which carries its address and auth - ' +
+          'Basic with email:token for Cloud, a Bearer personal access token for Server.',
+        type: 'connection',
+        connectionType: 'jira',
         required: true,
-      }),
-      new OrknuxParameter({
-        name: 'email',
-        description:
-          'Whose API token this is, for Cloud\'s Basic authentication. ' +
-          'Leave empty on Server, where the token stands alone.',
-        type: 'string',
-        required: false,
-      }),
-      new OrknuxParameter({
-        name: 'token',
-        description: 'An API token (Cloud, with email) or a personal access token (Server, without).',
-        type: 'string',
-        required: true,
-        secret: true,
       }),
       new OrknuxParameter({
         name: 'project',
@@ -605,15 +610,32 @@ export default class Jira extends OrknuxPlugin {
     ];
   }
 
+  /*
+   * The kind of host this plugin talks to, so a workspace can hold several
+   * Jira sites by name rather than one url on the plugin's page.
+   */
+  connectionTypes() {
+    return [
+      {
+        name: 'jira',
+        label: 'Jira',
+        description:
+          'A Jira site - Cloud with Basic auth and email:token as the secret, or Server and Data Center ' +
+          'with a Bearer personal access token.',
+        urlPlaceholder: 'https://your-site.atlassian.net',
+      },
+    ];
+  }
+
   permissions() {
-    // None. Turning `email:token` into base64 is `orknux.encoding`'s job now,
-    // and that is ungranted — it reaches nothing, the way a digest does not.
+    // None. The credential arrives already spelled as a header, so there is
+    // nothing left here to encode.
     return [];
   }
 
   capabilities() {
     // The widest capability there is, asked for because this plugin is about
-    // exactly one outside service: every request goes to the url above.
+    // exactly one outside service: every request goes to the connection's url.
     return ['NETWORK_REQUEST'];
   }
 
