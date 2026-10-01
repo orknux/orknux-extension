@@ -11,27 +11,31 @@
  * ## Setting one up
  *
  * 1. Load this plugin and accept NETWORK_REQUEST, which is all it asks for.
- * 2. Set `url` to the wiki's root — `https://your-site.atlassian.net/wiki` for
- *    Cloud, or the base url of a Server/Data Center install.
- * 3. Put a credential in one of the workspace's variables and point `token` at
- *    it. For Cloud that is an API token, and `email` must say whose it is; for
- *    Server/Data Center it is a personal access token, and `email` stays empty.
+ * 2. Add a connection of the kind it declares, Confluence, with the wiki's
+ *    root as its URL — `https://your-site.atlassian.net/wiki` for Cloud, or
+ *    the base url of a Server/Data Center install.
+ * 3. For Cloud, Basic auth with `email:token` as the secret — an API token
+ *    and whose it is. For Server/Data Center, Bearer with a personal access
+ *    token.
+ * 4. Point the plugin's `confluence` parameter at that connection.
  *
- * Which of Atlassian's two authentication schemes applies is read off `email`:
- * set, the token is sent as Basic `email:token`, which is Cloud's way; unset,
- * as a Bearer token, which is Server's. Nothing else about the two differs
- * here, because `/rest/api/search` and `/rest/api/content` answer on both.
+ * Which of Atlassian's two deployments this is, is read off the connection's
+ * auth kind: Basic is Cloud's way, Bearer is Server's. It used to be read off
+ * whether an `email` setting was filled in, and the auth kind is the same
+ * fact said where it already lives. Nothing else about the two differs for
+ * reading a page, because `/rest/api/search` and `/rest/api/content` answer
+ * on both.
  *
- * ## Why this asks for no permission
+ * ## Why a connection and not three settings
  *
- * Basic authentication is base64, and the sandbox hands out language builtins
- * and nothing else — no `btoa`, on purpose. This file used to carry the
- * alphabet and the loop, and ask for TEXT_ENCODING to get at the bytes.
- * `orknux.encoding` replaced both: the server does the UTF-8 and the base64,
- * so an email with anything past ASCII in it is still encoded the way the
- * other end will decode it, and the plugin needs no permission to say so.
- * Encoding is ungranted because it reaches nothing — it is arithmetic on a
- * string, the way a digest is.
+ * The address and the credential used to be the plugin's own parameters, so a
+ * workspace had exactly one Confluence and its token was a plugin setting. A
+ * connection is where a workspace already keeps hosts: encrypted, checked, one
+ * row per site — and a kind of its own keeps the picker to Confluence sites
+ * rather than every HTTP endpoint there is. Because the kind is this plugin's,
+ * the server hands its address and headers across with the handle, the
+ * credential already spelled for its auth kind — so this file encodes
+ * nothing and asks for no permission to.
  *
  * Licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
@@ -46,43 +50,48 @@ function at(holder, name) {
   return held === undefined ? null : held;
 }
 
+/**
+ * The connection the workspace pointed this plugin at, with its address.
+ *
+ * Only a connection of this plugin's own kind crosses with `url` and
+ * `headers`; anything else arrives as a bare handle. So a handle without a url
+ * is a connection this plugin cannot use - a plain HTTP one, or a server old
+ * enough to hand every connection over as a name only - and saying which is
+ * kinder than a request to `undefined/rest/api/...`.
+ */
+function wiki(settings) {
+  const connection = settings.confluence;
+  if (connection === undefined || connection === null) {
+    throw new Error("the plugin's confluence parameter is not set, and every Confluence call needs it");
+  }
+  if (typeof connection.url !== 'string' || connection.url.length === 0) {
+    throw new Error(
+      "the confluence parameter names a connection that is not a Confluence connection of this plugin's " +
+        'kind, so its address never reached the plugin - point it at a Confluence connection, on a server ' +
+        'that hands one over',
+    );
+  }
+  return connection;
+}
+
 /** The wiki's root, without its trailing slash. */
 function root(settings) {
-  const configured = settings.url;
-  if (typeof configured !== 'string' || configured.length === 0) {
-    throw new Error("the plugin's url parameter is not set, and every Confluence call needs it");
-  }
+  const configured = wiki(settings).url;
   return configured.endsWith('/') ? configured.slice(0, -1) : configured;
 }
 
-/** The authorization header: Basic for Cloud where `email` is set, Bearer for Server. */
-function authorization(settings) {
-  const token = settings.token;
-  if (typeof token !== 'string' || token.length === 0) {
-    throw new Error("the plugin's token parameter is not set, and every Confluence call needs it");
-  }
-  const email = settings.email;
-  if (typeof email === 'string' && email.length > 0) {
-    /*
-     * `orknux.encoding` rather than a hand-rolled alphabet and a TextEncoder:
-     * the server does the UTF-8 and the base64, so this plugin needs no
-     * permission to turn a string into its own bytes.
-     */
-    const pair = orknux.encoding.encodeBase64(`${email}:${token}`);
-    if (pair.error !== undefined) {
-      throw new Error(`could not encode the credential: ${pair.error}`);
-    }
-    return 'Basic ' + pair.base64;
-  }
-  return 'Bearer ' + token;
+/**
+ * The headers a call goes out with: json asked for, and whatever the
+ * connection says to send - its credential already spelled for its auth kind,
+ * so Basic and Bearer are the connection's business, not this.
+ */
+function headers(settings) {
+  return Object.assign({ accept: 'application/json' }, wiki(settings).headers ?? {});
 }
 
 /** One read of Confluence's API, authenticated, answered or thrown. */
 function read(settings, path) {
-  const answered = orknux.http.get(root(settings) + path, {
-    accept: 'application/json',
-    authorization: authorization(settings),
-  });
+  const answered = orknux.http.get(root(settings) + path, headers(settings));
   if (answered.error !== undefined) {
     throw new Error(`could not reach Confluence: ${answered.error}`);
   }
@@ -100,9 +109,12 @@ function plain(text) {
   return typeof text === 'string' ? text.replace(/@@@(?:end)?hl@@@/g, '') : null;
 }
 
-/** Whether this is Atlassian Cloud, which is what having an email to send means. */
+/**
+ * Whether this is Atlassian Cloud, which is what Basic auth means: Cloud takes
+ * `email:token`, and Server/Data Center a personal access token as Bearer.
+ */
 function isCloud(settings) {
-  return typeof settings.email === 'string' && settings.email.length > 0;
+  return wiki(settings).authType === 'BASIC';
 }
 
 /**
@@ -290,40 +302,43 @@ export default class Confluence extends OrknuxPlugin {
   parameters() {
     return [
       new OrknuxParameter({
-        name: 'url',
+        name: 'confluence',
         description:
-          'The wiki\'s root: https://your-site.atlassian.net/wiki for Cloud, ' +
-          'or the base url of a Server install.',
-        type: 'string',
+          'Which Confluence to ask: a Confluence connection, which carries its address and auth - ' +
+          'Basic with email:token for Cloud, Bearer with a personal access token for Server.',
+        type: 'connection',
+        connectionType: 'confluence',
         required: true,
-      }),
-      new OrknuxParameter({
-        name: 'email',
-        description:
-          'Whose API token this is, for Cloud\'s Basic authentication. ' +
-          'Leave empty on Server, where the token stands alone.',
-        type: 'string',
-        required: false,
-      }),
-      new OrknuxParameter({
-        name: 'token',
-        description: 'An API token (Cloud, with email) or a personal access token (Server, without).',
-        type: 'string',
-        required: true,
-        secret: true,
       }),
     ];
   }
 
+  /*
+   * The kind of host this plugin talks to, so a workspace can hold several
+   * Confluence sites by name rather than one url on the plugin's page.
+   */
+  connectionTypes() {
+    return [
+      {
+        name: 'confluence',
+        label: 'Confluence',
+        description:
+          'A Confluence wiki, Cloud or Server/Data Center: Basic with email:token for Cloud, ' +
+          'Bearer with a personal access token for Server.',
+        urlPlaceholder: 'https://your-site.atlassian.net/wiki',
+      },
+    ];
+  }
+
   permissions() {
-    // None. Turning `email:token` into base64 is `orknux.encoding`'s job now,
-    // and that is ungranted — it reaches nothing, the way a digest does not.
+    // None. The credential arrives already spelled as a header, so there is
+    // nothing left here to encode.
     return [];
   }
 
   capabilities() {
     // The widest capability there is, asked for because this plugin is about
-    // exactly one outside service: every request goes to the url above.
+    // exactly one outside service: every request goes to the connection's url.
     return ['NETWORK_REQUEST'];
   }
 
@@ -763,9 +778,7 @@ reporting that somebody has never been mentioned.`,
           let avatarType = null;
           let avatarKey = '';
           if (withAvatar === true && avatarUrl !== null) {
-            const fetched = orknux.http.download(avatarUrl, {
-              authorization: authorization(this.settings),
-            });
+            const fetched = orknux.http.download(avatarUrl, headers(this.settings));
             if (fetched.error === undefined && fetched.status < 400) {
               avatar = fetched.base64;
               avatarType = fetched.contentType;

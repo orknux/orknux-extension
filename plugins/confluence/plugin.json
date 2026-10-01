@@ -10,7 +10,7 @@
     "search"
   ],
   "summary": "Search the wiki beside the work, and open its pages as text.",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }

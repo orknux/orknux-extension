@@ -1265,21 +1265,22 @@ test('the confluence plugin declares what the server would accept', async () => 
   assert.equal(inspected.id, 'confluence');
   assert.deepEqual(validate(inspected), []);
 
+  /* One connection of its own kind, carrying the address and auth three settings used to. */
   assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.name),
-    ['url', 'email', 'token'],
-  );
-  /* The token is the one secret; the url and the email are plain settings. */
-  assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.secret),
-    [false, false, true],
+    inspected.connectionTypes.map((kind) => kind.name),
+    ['confluence'],
   );
   assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.required),
-    [true, false, true],
+    inspected.parameters.map((parameter) => [
+      parameter.name,
+      parameter.type,
+      parameter.connectionType,
+      parameter.required,
+    ]),
+    [['confluence', 'connection', 'confluence', true]],
   );
 
-  /* None: `orknux.encoding` turns the credential into base64, and is ungranted. */
+  /* None: the credential arrives already spelled as a header. */
   assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
@@ -1305,11 +1306,11 @@ test('the confluence plugin reads a page id out of either spelling of a page url
   assert.throws(() => declared.run('not a page'), /not a page id or a page url/);
   assert.throws(
     () => declared.run('https://x.atlassian.net/wiki/spaces/DOC/pages/12345/T'),
-    /url parameter is not set/,
+    /confluence parameter is not set/,
   );
   assert.throws(
     () => declared.run('https://wiki.example.com/pages/viewpage.action?pageId=99'),
-    /url parameter is not set/,
+    /confluence parameter is not set/,
   );
 });
 
@@ -1324,8 +1325,27 @@ test('confluence turns the ids a page mentions into people, on either deployment
     return (name) => functions.find((one) => one.name === name);
   };
 
-  const cloud = { url: 'https://acme.atlassian.net/wiki', email: 'ada@acme.com', token: 't' };
-  const server = { url: 'https://wiki.acme.com', token: 't' };
+  /* A connection of the plugin's own kind, as the server hands it over: address, auth kind and headers. */
+  const cloud = {
+    confluence: {
+      id: 1,
+      type: 'HTTP',
+      pluginType: 'confluence/confluence',
+      url: 'https://acme.atlassian.net/wiki',
+      authType: 'BASIC',
+      headers: { Authorization: 'Basic YWRhQGFjbWUuY29tOnQ=' },
+    },
+  };
+  const server = {
+    confluence: {
+      id: 2,
+      type: 'HTTP',
+      pluginType: 'confluence/confluence',
+      url: 'https://wiki.acme.com',
+      authType: 'BEARER_TOKEN',
+      headers: { Authorization: 'Bearer t' },
+    },
+  };
 
   /*
    * A body as Confluence actually stores one: a mention is markup carrying an
@@ -1446,7 +1466,7 @@ test('confluence turns the ids a page mentions into people, on either deployment
 
   /* Fetched with the wiki's own credential, because the avatar is behind it. */
   assert.equal(fetched[0].where, withPicture.avatarUrl);
-  assert.match(fetched[0].headers.authorization, /^Basic /);
+  assert.match(fetched[0].headers.Authorization, /^Basic /);
   assert.equal(withPicture.avatar, 'aVZCT1J3MEtHZ28=');
   assert.equal(withPicture.avatarType, 'image/png');
   assert.ok(withPicture.avatarKey.startsWith('confluence.'));

@@ -4,9 +4,14 @@ The wiki beside the work. The answer to half the questions a workflow or an
 agent is asked lives on a Confluence page, so this plugin offers the two
 calls that matter: **search** the wiki, and **open a page** as readable text.
 
-Point `url` at the wiki's root (Cloud or Server/Data Center), keep the
-credential in a workspace variable, and accept `NETWORK_REQUEST` — the server
-makes the calls; the plugin never holds the token.
+It brings a connection kind of its own, **Confluence**. Add one per wiki with
+the wiki's root as its URL, point the plugin's `confluence` parameter at it,
+and accept `NETWORK_REQUEST` — the server makes the calls.
+
+Coming from 0.9: the `url`, `email` and `token` parameters are gone. Make a
+Confluence connection from them — Basic with `email:token` as the secret for
+Cloud, Bearer with the personal access token for Server/Data Center — and
+point `confluence` at it.
 
 ## Two functions, both tools
 
@@ -75,7 +80,8 @@ openUser('jsmith')                                                 // Server: a 
 ```
 
 Which kind of id a bare string is depends on the deployment, and the plugin
-decides that the same way it decides everything else — off `email`. On Cloud
+decides that the same way it decides everything else — off the connection's
+auth kind. On Cloud
 it is an account id, because Cloud retired usernames. On Server a
 32-character hex string is a user key and anything else is a username, which
 is the distinction Confluence itself draws.
@@ -128,7 +134,8 @@ reaches for the two steps rather than searching for the name and reporting
 nothing. This is the one place the two deployments genuinely differ, the
 same way the jira plugin's search does: Cloud has `/rest/api/search/user`,
 and Server asks the CQL search everything else goes through with `type=user`.
-Which one runs is decided off `email`, like everything else here.
+Which one runs is decided off the connection's auth kind, like everything
+else here.
 
 The people it answers are the same `User` shape `openUser` gives, with the
 avatar bytes empty — a search fetches no pictures.
@@ -145,20 +152,20 @@ converting it here would mean choosing a lossy target for everybody.
 
 | Name | |
 |---|---|
-| `url` | The wiki's root. **Required.** `https://your-site.atlassian.net/wiki` for Cloud, or the base url of a Server/Data Center install. |
-| `email` | Whose API token `token` is. Set for Cloud, **left empty for Server/Data Center** — this is the field that picks the authentication scheme. |
-| `token` | The credential. **Secret**, so it lives in a workspace variable and is never typed into a page. An API token on Cloud, a personal access token on Server. |
+| `confluence` | A Confluence connection. **Required.** It carries the wiki's root — `https://your-site.atlassian.net/wiki` for Cloud, or the base url of a Server/Data Center install — and the credential, kept encrypted on the connection rather than on the plugin's page. |
 
-### Cloud or Server is read off `email`
+A workspace can hold as many Confluence connections as it has wikis; the
+picker offers only those.
 
-Atlassian has two authentication schemes, and which one applies is decided by
-whether `email` is set rather than by asking anybody to say which install they
-have:
+### Cloud or Server is read off the connection's auth kind
 
-| `email` | Sent as | Which install |
+Atlassian has two authentication schemes, and the one the connection uses is
+also what says which install it is:
+
+| Auth kind | Secret | Which install |
 |---|---|---|
-| set | `Basic base64(email:token)` | Cloud |
-| empty | `Bearer token` | Server / Data Center |
+| Basic | `email:token` — an API token and whose it is | Cloud |
+| Bearer | a personal access token | Server / Data Center |
 
 Nothing else about the two differs here: `/rest/api/search` and
 `/rest/api/content` answer on both.
@@ -167,14 +174,12 @@ Nothing else about the two differs here: `/rest/api/search` and
 
 `NETWORK_REQUEST`, and nothing else. It is the widest capability there is,
 asked for because this plugin is about exactly one outside service — every
-request goes to the `url` above. The plugin has no network of its own; the
-server makes each call on its behalf, so the token is never in the sandbox.
+request goes to the connection's URL. The plugin has no network of its own;
+the server makes each call on its behalf, under the installation's proxy rules.
 
-**No permission at all.** Basic authentication is base64, and the sandbox has
-no `btoa` on purpose. This file used to carry the alphabet, the loop, and a
-`TEXT_ENCODING` permission to reach the bytes. `orknux.encoding` replaced all
-three — encoding is ungranted because it reaches nothing, being arithmetic on
-a string the way a digest is.
+**No permission at all.** The connection hands its headers over with the
+credential already spelled for its auth kind, so there is nothing left for the
+plugin to encode.
 
 ## The shapes it exports
 
