@@ -2305,21 +2305,17 @@ test('the jenkins plugin declares what the server would accept', async () => {
   assert.equal(inspected.id, 'jenkins');
   assert.deepEqual(validate(inspected), []);
 
+  /* One connection of its own kind, carrying the address and auth three settings used to. */
   assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.name),
-    ['url', 'user', 'token'],
-  );
-  /* The token is the one secret, and the credential is optional as a pair. */
-  assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.secret),
-    [false, false, true],
+    inspected.connectionTypes.map((kind) => kind.name),
+    ['jenkins'],
   );
   assert.deepEqual(
-    inspected.parameters.map((parameter) => parameter.required),
-    [true, false, false],
+    inspected.parameters.map((parameter) => [parameter.name, parameter.type, parameter.connectionType]),
+    [['jenkins', 'connection', 'jenkins']],
   );
 
-  /* None: `orknux.encoding` turns the credential into base64, and is ungranted. */
+  /* None: the credential arrives already spelled as a header. */
   assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
@@ -2357,15 +2353,11 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   assert.throws(() => configured({})('build').run('deploy', 'yesterday'), /not a build number or a permalink/);
   assert.throws(() => configured({})('queueItem').run('soon'), /not a queue item id or a queue url/);
 
-  /* Then the settings, each named — and the credential is a pair or neither. */
-  assert.throws(() => configured({})('job').run('deploy'), /url parameter is not set/);
+  /* Then the connection: absent, or a bare handle that never carried an address. */
+  assert.throws(() => configured({})('job').run('deploy'), /jenkins parameter is not set/);
   assert.throws(
-    () => configured({ url: 'https://ci.example.com', token: 't' })('job').run('deploy'),
-    /no user to send it as/,
-  );
-  assert.throws(
-    () => configured({ url: 'https://ci.example.com', user: 'ada' })('job').run('deploy'),
-    /no token to go with it/,
+    () => configured({ jenkins: { id: 1, type: 'HTTP' } })('job').run('deploy'),
+    /not a Jenkins connection of this plugin's kind/,
   );
 
   /*
@@ -2472,7 +2464,16 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
       return answer(what);
     };
 
-    const site = { url: 'https://ci.example.com/', user: 'ada', token: 't' };
+    const site = {
+      jenkins: {
+        id: 1,
+        type: 'HTTP',
+        pluginType: 'jenkins/jenkins',
+        url: 'https://ci.example.com/',
+        authType: 'BASIC',
+        headers: { Authorization: 'Basic ' + Buffer.from('ada:t').toString('base64') },
+      },
+    };
     /* A pasted link to a build, asked about as a job: the build is not the job. */
     opened = configured(site)('job').run('https://ci.example.com/job/platform/job/deploy/412/');
     listed = configured(site)('jobs').run('', 2);
@@ -2483,7 +2484,9 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
     queued = configured(site)('queueItem').run('https://ci.example.com/queue/item/77/');
 
     /* An instance read anonymously sends no credential at all. */
-    configured({ url: 'https://ci.example.com' })('job').run('deploy');
+    configured({
+      jenkins: { id: 2, type: 'HTTP', pluginType: 'jenkins/jenkins', url: 'https://ci.example.com', authType: 'NONE', headers: {} },
+    })('job').run('deploy');
 
     assert.throws(
       () => configured(site)('queueItem').run('99'),
@@ -2498,7 +2501,7 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   assert.match(asked[0].url, /^https:\/\/ci\.example\.com\/job\/platform\/job\/deploy\/api\/json\?tree=/);
   assert.equal(asked[0].method, 'GET');
   assert.equal(
-    Buffer.from(asked[0].headers.authorization.slice('Basic '.length), 'base64').toString('utf8'),
+    Buffer.from(asked[0].headers.Authorization.slice('Basic '.length), 'base64').toString('utf8'),
     'ada:t',
   );
   /* The colour is translated, and the parameter's class name is not its type. */
@@ -2562,6 +2565,7 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   assert.equal(queued.url, 'https://ci.example.com/job/platform/job/deploy/413/');
 
   /* Anonymous: no authorization header at all, rather than an empty one. */
+  assert.equal(asked[9].headers.Authorization, undefined);
   assert.equal(asked[9].headers.authorization, undefined);
 });
 
@@ -2571,7 +2575,16 @@ test('jenkins searches the job tree, and reads a test report a case at a time', 
 
   const plugin = Object.create(Jenkins.prototype);
   Object.defineProperty(plugin, 'settings', {
-    value: Object.freeze({ url: 'https://ci.example.com', user: 'ada', token: 't' }),
+    value: Object.freeze({
+      jenkins: {
+        id: 1,
+        type: 'HTTP',
+        pluginType: 'jenkins/jenkins',
+        url: 'https://ci.example.com',
+        authType: 'BASIC',
+        headers: { Authorization: 'Basic ' + Buffer.from('ada:t').toString('base64') },
+      },
+    }),
   });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 

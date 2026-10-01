@@ -21,12 +21,24 @@
  * ## Setting one up
  *
  * 1. Load this plugin and accept NETWORK_REQUEST, which is all it asks for.
- * 2. Set `url` to the controller's root — `https://ci.example.com`, or
+ * 2. Add a connection of the kind it declares, Jenkins, with the controller's
+ *    root as its URL — `https://ci.example.com`, or
  *    `https://example.com/jenkins` where it is served under a path.
- * 3. For anything but an instance read anonymously, set `user` to whose token
- *    it is and put an API token in a workspace variable that `token` points
- *    at. Jenkins authenticates a token *as somebody*, so the two go together
- *    or neither does.
+ * 3. For anything but an instance read anonymously, give it Basic auth with
+ *    `user:apiToken` as the secret. Jenkins authenticates a token *as
+ *    somebody*, so the user is part of the credential rather than beside it.
+ *    An anonymous instance takes no auth at all.
+ * 4. Point the plugin's `jenkins` parameter at that connection.
+ *
+ * ## Why a connection and not three settings
+ *
+ * The address and the credential used to be the plugin's own parameters, so a
+ * workspace had exactly one Jenkins and its token was a plugin setting. A
+ * connection is where a workspace already keeps hosts: encrypted, one row per
+ * controller — and a kind of its own keeps the picker to Jenkins controllers
+ * rather than every HTTP endpoint there is. Because the kind is this plugin's,
+ * the server hands its address and headers across with the handle; nothing
+ * but this plugin knows how to speak to it.
  *
  * ## Three things about Jenkins' API worth knowing before reading this file
  *
@@ -43,8 +55,8 @@
  * **The links Jenkins writes are its own idea of where it lives** — whatever
  * root URL an administrator typed into its configuration, which on a great
  * many instances is still `http://localhost:8080`. So every url answered here
- * is built from the `url` this plugin was given instead, which is the one
- * address known to work: it is the one the answer just came back from.
+ * is built from the connection's url instead, which is the one address known
+ * to work: it is the one the answer just came back from.
  *
  * Licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
@@ -117,55 +129,51 @@ function header(answered, name) {
   return null;
 }
 
+/**
+ * The connection the workspace pointed this plugin at, with its address.
+ *
+ * Only a connection of this plugin's own kind crosses with `url` and
+ * `headers`; anything else arrives as a bare handle. So a handle without a url
+ * is a connection this plugin cannot use - a plain HTTP one, or a server old
+ * enough to hand every connection over as a name only - and saying which is
+ * kinder than a request to `undefined/job/...`.
+ */
+function server(settings) {
+  const connection = settings.jenkins;
+  if (connection === undefined || connection === null) {
+    throw new Error("the plugin's jenkins parameter is not set, and every Jenkins call needs it");
+  }
+  if (typeof connection.url !== 'string' || connection.url.length === 0) {
+    throw new Error(
+      "the jenkins parameter names a connection that is not a Jenkins connection of this plugin's " +
+        'kind, so its address never reached the plugin - point it at a Jenkins connection, on a server ' +
+        'that hands one over',
+    );
+  }
+  return connection;
+}
+
 /** The controller's root, without its trailing slash. */
 function root(settings) {
-  const configured = settings.url;
-  if (typeof configured !== 'string' || configured.length === 0) {
-    throw new Error("the plugin's url parameter is not set, and every Jenkins call needs it");
-  }
+  const configured = server(settings).url;
   return configured.endsWith('/') ? configured.slice(0, -1) : configured;
 }
 
 /**
- * The authorization header, or null where this instance is read anonymously.
+ * The headers a call goes out with: json asked for, whatever the connection
+ * says to send, and whatever else was given.
  *
- * Jenkins has one scheme: Basic, with an API token where a password would go.
- * A token identifies somebody, so a token with no user is refused here rather
- * than sent as a Bearer token Jenkins has no idea what to do with.
+ * The connection's headers already carry its credential, spelled for its auth
+ * kind - Basic `user:apiToken`, which is Jenkins' one scheme - and carry none
+ * at all for an instance read anonymously, so there is nothing to decide here.
  */
-function authorization(settings) {
-  const user = settings.user;
-  const token = settings.token;
-  const named = typeof user === 'string' && user.length > 0;
-  const held = typeof token === 'string' && token.length > 0;
-  if (!named && !held) {
-    /* An open instance, read as whoever anonymous is allowed to be. */
-    return null;
-  }
-  if (!named) {
-    throw new Error('a token is set but no user to send it as, and Jenkins authenticates a token as somebody');
-  }
-  if (!held) {
-    throw new Error('a user is set but no token to go with it');
-  }
-  /*
-   * `orknux.encoding` rather than a hand-rolled alphabet and a TextEncoder:
-   * the server does the UTF-8 and the base64, so this plugin needs no
-   * permission to turn a string into its own bytes.
-   */
-  const pair = orknux.encoding.encodeBase64(`${user}:${token}`);
-  if (pair.error !== undefined) {
-    throw new Error(`could not encode the credential: ${pair.error}`);
-  }
-  return 'Basic ' + pair.base64;
-}
-
-/** The headers a call goes out with: json asked for, the credential, and whatever else was given. */
 function headers(settings, more) {
   const built = { accept: 'application/json' };
-  const credential = authorization(settings);
-  if (credential !== null) {
-    built.authorization = credential;
+  const sent = server(settings).headers;
+  if (sent !== null && typeof sent === 'object') {
+    for (const key of Object.keys(sent)) {
+      built[key] = sent[key];
+    }
   }
   if (more !== null && typeof more === 'object') {
     for (const key of Object.keys(more)) {
@@ -187,7 +195,7 @@ function refusal(status, path, said) {
   const where = path.split('?')[0];
   const aside = typeof said === 'string' && said.length > 0 ? `: ${said}` : '';
   if (status === 401) {
-    return `Jenkins refused the credential (401) for ${where}${aside} - check the user, and that the token is that user's`;
+    return `Jenkins refused the credential (401) for ${where}${aside} - check the connection's secret is user:apiToken, and that the token is that user's`;
   }
   if (status === 403) {
     return `Jenkins refused the request (403) for ${where}${aside} - either this user may not do it, or the instance wants a CSRF crumb it would not issue`;
@@ -276,7 +284,7 @@ function isBuild(segment) {
  * `lastBuild` would answer confidently about something else.
  *
  * Only the path is read out of a url; the host is not. The request goes to the
- * `url` this plugin was configured with, so a link to a *different* Jenkins
+ * connection this plugin was pointed at, so a link to a *different* Jenkins
  * names a job on this one, or nothing at all.
  */
 function reference(job) {
@@ -524,45 +532,43 @@ export default class Jenkins extends OrknuxPlugin {
     return 1;
   }
 
+  /*
+   * The kind of host this plugin talks to, so a workspace can hold several
+   * Jenkins controllers by name rather than one url on the plugin's page.
+   */
+  connectionTypes() {
+    return [
+      {
+        name: 'jenkins',
+        label: 'Jenkins',
+        description:
+          'A Jenkins controller: Basic auth with user:apiToken as the secret, or no auth for one read anonymously.',
+        urlPlaceholder: 'https://jenkins.example.com',
+      },
+    ];
+  }
+
   parameters() {
     return [
       new OrknuxParameter({
-        name: 'url',
-        description:
-          "The controller's root: https://ci.example.com, or https://example.com/jenkins " +
-          'where it is served under a path.',
-        type: 'string',
+        name: 'jenkins',
+        description: 'Which Jenkins to ask: a Jenkins connection, which carries its address and auth.',
+        type: 'connection',
+        connectionType: 'jenkins',
         required: true,
-      }),
-      new OrknuxParameter({
-        name: 'user',
-        description:
-          'Whose API token this is — Jenkins authenticates a token as somebody. ' +
-          'Left empty, with token empty too, on an instance read anonymously.',
-        type: 'string',
-        required: false,
-      }),
-      new OrknuxParameter({
-        name: 'token',
-        description:
-          "An API token, made on the user's own configuration page. A password works on " +
-          'most instances and should not be used.',
-        type: 'string',
-        required: false,
-        secret: true,
       }),
     ];
   }
 
   permissions() {
-    // None. Turning `user:token` into base64 is `orknux.encoding`'s job, and
-    // that is ungranted — it reaches nothing, the way a digest does not.
+    // None. The credential arrives already spelled as a header, so there is
+    // nothing left here to encode.
     return [];
   }
 
   capabilities() {
     // The widest capability there is, asked for because this plugin is about
-    // exactly one outside service: every request goes to the url above.
+    // exactly one outside service: every request goes to the connection's url.
     return ['NETWORK_REQUEST'];
   }
 

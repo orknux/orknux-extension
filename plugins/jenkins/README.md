@@ -7,7 +7,7 @@ job's state, a build's result, the failing tests, the last hundred lines of the
 log.
 
 Every call is made by the server on the plugin's behalf under
-`NETWORK_REQUEST` — the plugin never holds the token.
+`NETWORK_REQUEST`, against a Jenkins connection the workspace keeps.
 
 | Function | |
 |---|---|
@@ -48,8 +48,8 @@ given. A url that names a build answers that build whatever `which` says,
 because a link to build 412 is a link to build 412.
 
 **Only the path is read out of a url; the host is not.** Every request goes to
-the `url` parameter below, so a link to a *different* Jenkins names a job on
-this one, or nothing at all.
+the connection below, so a link to a *different* Jenkins names a job on this
+one, or nothing at all.
 
 ## Searching, and why not Jenkins' own search
 
@@ -106,8 +106,8 @@ that: `status` is a word here (`passing`, `failing`, `unstable`, `aborted`,
 
 **A link Jenkins writes points wherever its administrator said it lives**,
 which on a great many instances is still `http://localhost:8080`. So every
-`url` answered here is built from the `url` this plugin was given, which is the
-one address known to work — it is the one the answer just came back from.
+`url` answered here is built from the connection's URL, which is the one
+address known to work — it is the one the answer just came back from.
 
 ## The log is fetched by the tail, not by the whole
 
@@ -135,29 +135,36 @@ a listing leaves `buildable`, `inQueue`, `health` and `parameters` empty rather
 than absent, so a caller reading `parameters` gets a list either way instead of
 finding out which call it came from. `orkx plugin check` prints every field.
 
-## Parameters
+## Setting it up
 
-| Name | |
+It brings a connection kind of its own, **Jenkins**. Add one per controller,
+with its root as the URL — `https://ci.example.com`, or
+`https://example.com/jenkins` where it is served under a path — and point the
+plugin's one parameter, `jenkins`, at the one to ask.
+
+| Auth | |
 |---|---|
-| `url` | The controller's root. **Required.** `https://ci.example.com`, or `https://example.com/jenkins` where it is served under a path. |
-| `user` | Whose API token `token` is. Jenkins authenticates a token *as somebody*, so a token with no user is refused here rather than sent as something Jenkins cannot read. |
-| `token` | An API token, made on that user's own configuration page. **Secret**, so it lives in a workspace variable. A password works on most instances and should not be used. |
+| Basic | `user:apiToken` as the secret. Jenkins authenticates a token *as somebody*, so the user is part of the credential. Make the token on that user's own configuration page; a password works on most instances and should not be used. |
+| None | An instance read anonymously, which is a real way to run a public Jenkins and no way at all to trigger a build on one. |
 
-Both credential fields are optional, and the two go together: set neither and
-the instance is read anonymously, which is a real way to run a public Jenkins
-and no way at all to trigger a build on one.
+The address and the credential live on the connection rather than on the
+plugin's page, so they are kept encrypted, and a workspace can hold as many
+controllers as it has.
+
+**Coming from 0.2:** the `url`, `user` and `token` parameters are gone. Make a
+Jenkins connection from them — Basic auth with `user:token` as the secret, or
+no auth where both were empty — and point `jenkins` at it.
 
 ## What it asks for, and why
 
 `NETWORK_REQUEST`, and nothing else. It is the widest capability there is,
 asked for because this plugin is about exactly one outside service — every
-request goes to the `url` above. The plugin has no network of its own; the
-server makes each call on its behalf, so the token is never in the sandbox.
+request goes to the connection above. The plugin has no network of its own;
+the server makes each call on its behalf.
 
-**No permission at all.** Basic authentication is base64, and the sandbox has
-no `btoa` on purpose. `orknux.encoding` does the UTF-8 and the base64, and it
-is ungranted because it reaches nothing — it is arithmetic on a string, the way
-a digest is.
+**No permission at all.** The connection's credential arrives already spelled
+as an `Authorization` header, so there is nothing left in the plugin to
+encode.
 
 ## The CSRF crumb, and why a POST fetches one first
 

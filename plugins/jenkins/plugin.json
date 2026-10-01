@@ -10,7 +10,7 @@
     "devops"
   ],
   "summary": "Read a build, find out why it went red, and run the job again.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }
