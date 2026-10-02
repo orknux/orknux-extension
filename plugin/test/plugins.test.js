@@ -142,6 +142,7 @@ test('the github plugin declares what the server would accept', async () => {
     'comment',
     'reviewComment',
     'replyToComment',
+    'editPull',
     'markReadyForReview',
     'convertToDraft',
   ];
@@ -166,6 +167,45 @@ test('the github plugin declares what the server would accept', async () => {
     assert.equal(declared.returnType, fronted.returnType);
     assert.equal(declared.description, fronted.description);
   }
+});
+
+test('github editPull sends only what was given, and refuses to send nothing', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const plugin = Object.create(Github.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ token: 'ghp_x', organization: 'acme' }) });
+  const editPull = plugin.functions().find((one) => one.name === 'editPull');
+
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  let edited;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      return {
+        status: 200,
+        headers: {},
+        body: '{}',
+        json: { number: 7, title: 'Bump order-model', body: 'kept', html_url: 'https://github.com/acme/api/pull/7' },
+      };
+    };
+    /* A title alone: the description is not sent, so it is not wiped. */
+    edited = editPull.run('', 'api', 7, 'Bump order-model', '');
+    assert.throws(() => editPull.run('', 'api', 7, '  ', ''), /there is nothing to change/);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].method, 'PATCH');
+  assert.equal(asked[0].url, 'https://api.github.com/repos/acme/api/pulls/7');
+  assert.deepEqual(asked[0].body, { title: 'Bump order-model' });
+  assert.deepEqual(edited, {
+    number: 7,
+    title: 'Bump order-model',
+    body: 'kept',
+    url: 'https://github.com/acme/api/pull/7',
+  });
 });
 
 test('github takes a draft to review through GraphQL, and leaves one already there alone', async () => {

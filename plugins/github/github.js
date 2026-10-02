@@ -571,6 +571,17 @@ export default class Github extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'PullText',
+        description: 'A pull request\'s title and description, as they stand after an edit.',
+        properties: [
+          { name: 'number', kind: 'number', description: 'Which pull request.' },
+          { name: 'title', kind: 'string', description: 'The one-line title.' },
+          { name: 'body', kind: 'string', description: 'The description, as GitHub markdown.' },
+          { name: 'url', kind: 'string', description: 'The link for a person to open.' },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'DraftState',
         description: 'A pull request after its draft state was set.',
         properties: [
@@ -888,6 +899,7 @@ minutes for everybody on the PR.`,
       new OrknuxFunctionTool({ function: 'comment' }),
       new OrknuxFunctionTool({ function: 'reviewComment' }),
       new OrknuxFunctionTool({ function: 'replyToComment' }),
+      new OrknuxFunctionTool({ function: 'editPull' }),
       new OrknuxFunctionTool({ function: 'markReadyForReview' }),
       new OrknuxFunctionTool({ function: 'convertToDraft' }),
     ];
@@ -1672,6 +1684,53 @@ minutes for everybody on the PR.`,
             body: { body: text },
           }).json;
           return { id: at(made, 'id'), url: at(made, 'html_url') };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'editPull',
+        description:
+          'Changes a pull request\'s title, its description, or both. Pass owner and repo (or the repo as ' +
+          'owner/name, or an empty owner for the configured organization), the PR number, and the new ' +
+          'title and description as GitHub markdown - leave either out to keep it as it is. The ' +
+          'description is replaced whole, not appended to: read it with openPull first to change part ' +
+          'of it. Answers the number, title, description and url as they stand afterwards.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'number', type: 'number' },
+          { name: 'title', type: 'string', required: false, default: '' },
+          { name: 'body', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'PullText',
+        run: (owner, repo, number, title, body) => {
+          /*
+           * Empty means unchanged rather than blank: a pull request cannot
+           * have an empty title, and wiping a description is something nobody
+           * asks for by leaving an argument out.
+           */
+          const changes = {};
+          if (typeof title === 'string' && title.trim().length > 0) {
+            changes.title = title;
+          }
+          if (typeof body === 'string' && body.length > 0) {
+            changes.body = body;
+          }
+          if (Object.keys(changes).length === 0) {
+            throw new Error('there is nothing to change: pass a new title, a new description, or both');
+          }
+          const base = repoPath(this.settings, owner, repo);
+          const edited = read(this.settings, {
+            method: 'PATCH',
+            path: `${base}/pulls/${number}`,
+            body: changes,
+          }).json;
+          return {
+            number: at(edited, 'number'),
+            title: at(edited, 'title'),
+            body: at(edited, 'body'),
+            url: at(edited, 'html_url'),
+          };
         },
       }),
 

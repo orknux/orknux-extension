@@ -70,6 +70,7 @@ about which token these accept.
 | `comment(owner, repo, number, text)` | The plain kind, under the conversation. Works on an issue as well as a pull request. `text` is GitHub markdown. Answers the comment's `id` and `url`. |
 | `reviewComment(owner, repo, number, path, line, text)` | The review kind, anchored to a file in the diff. `path` is as `openPull` lists it; `line` is the line **in the new version**, or `0` to speak about the file as a whole. |
 | `replyToComment(owner, repo, number, commentId, text)` | Replies in the thread under one review comment. `reviewComment` answers an id, and a `review_comment` webhook carries one. |
+| `editPull(owner, repo, number, title?, body?)` | Changes the title, the description, or both; leave either out to keep it. The description is replaced whole, so read it with `openPull` first to change part of it. Answers `number`, `title`, `body` and `url` as they stand afterwards. |
 | `markReadyForReview(owner, repo, number)` | Takes a pull request out of draft — the site's *Ready for review* button. Answers `number`, `draft` and `url`; `draft: false` is the proof it moved. A PR already out of draft is answered as it is. |
 | `convertToDraft(owner, repo, number)` | The reverse: back into draft while work goes on. |
 
@@ -179,7 +180,7 @@ no network of its own — the server makes each call on its behalf.
 | For | Access |
 |---|---|
 | Everything that reads | Read on the repositories it should see |
-| `comment`, `reviewComment`, `replyToComment`, `messageAgentTask`, `markReadyForReview`, `convertToDraft` | Write on pull requests |
+| `comment`, `reviewComment`, `replyToComment`, `messageAgentTask`, `editPull`, `markReadyForReview`, `convertToDraft` | Write on pull requests |
 | `buildStatus` | Read on commit statuses and checks — or, failing that, a `classicToken` with `repo` scope |
 | The agent-task functions | A **user** token with Copilot access |
 
@@ -209,7 +210,7 @@ and a condition reads `.overall` instead of indexing into JSON.
 | Builds | `BuildStatus`, `Reporter` |
 | Searches | `PullSearch`, `CodeSearch`, `CommitSearch`, and the `PullMatch`, `CodeMatch`, `CommitMatch` they hold |
 | Listings | `RepoList`, `Repo`, `FileList`, `FileHistory` |
-| Writing and agents | `Comment`, `DraftState`, `AgentTask` |
+| Writing and agents | `Comment`, `PullText`, `DraftState`, `AgentTask` |
 
 `orkx plugin check` prints every field of every one of them.
 
