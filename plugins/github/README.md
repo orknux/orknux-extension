@@ -70,6 +70,8 @@ about which token these accept.
 | `comment(owner, repo, number, text)` | The plain kind, under the conversation. Works on an issue as well as a pull request. `text` is GitHub markdown. Answers the comment's `id` and `url`. |
 | `reviewComment(owner, repo, number, path, line, text)` | The review kind, anchored to a file in the diff. `path` is as `openPull` lists it; `line` is the line **in the new version**, or `0` to speak about the file as a whole. |
 | `replyToComment(owner, repo, number, commentId, text)` | Replies in the thread under one review comment. `reviewComment` answers an id, and a `review_comment` webhook carries one. |
+| `pullComments(owner, repo, number)` | What was said on a PR besides the review summaries: every comment on the diff grouped into threads, each with its file, line and whether it is resolved or outdated, and the comments under the conversation. `unresolved` counts the threads still open. Read through GraphQL, because only GraphQL knows a thread is resolved. Up to 100 threads and 100 comments; `truncated` says when there were more. |
+| `approve(owner, repo, number, text?)` | Approves the PR as whoever the token belongs to, with an optional note. GitHub refuses an approval of a PR the token's own account opened. Answers the review as `reviews` lists it. |
 | `editPull(owner, repo, number, title?, body?)` | Changes the title, the description, or both; leave either out to keep it. The description is replaced whole, so read it with `openPull` first to change part of it. Answers `number`, `title`, `body` and `url` as they stand afterwards. |
 | `markReadyForReview(owner, repo, number)` | Takes a pull request out of draft — the site's *Ready for review* button. Answers `number`, `draft` and `url`; `draft: false` is the proof it moved. A PR already out of draft is answered as it is. |
 | `convertToDraft(owner, repo, number)` | The reverse: back into draft while work goes on. |
@@ -180,7 +182,7 @@ no network of its own — the server makes each call on its behalf.
 | For | Access |
 |---|---|
 | Everything that reads | Read on the repositories it should see |
-| `comment`, `reviewComment`, `replyToComment`, `messageAgentTask`, `editPull`, `markReadyForReview`, `convertToDraft` | Write on pull requests |
+| `comment`, `reviewComment`, `replyToComment`, `messageAgentTask`, `approve`, `editPull`, `markReadyForReview`, `convertToDraft` | Write on pull requests |
 | `buildStatus` | Read on commit statuses and checks — or, failing that, a `classicToken` with `repo` scope |
 | The agent-task functions | A **user** token with Copilot access |
 
@@ -210,7 +212,7 @@ and a condition reads `.overall` instead of indexing into JSON.
 | Builds | `BuildStatus`, `Reporter` |
 | Searches | `PullSearch`, `CodeSearch`, `CommitSearch`, and the `PullMatch`, `CodeMatch`, `CommitMatch` they hold |
 | Listings | `RepoList`, `Repo`, `FileList`, `FileHistory` |
-| Writing and agents | `Comment`, `PullText`, `DraftState`, `AgentTask` |
+| Writing and agents | `Comment`, `PullComments`, `ReviewThread`, `ThreadComment`, `PullText`, `DraftState`, `AgentTask` |
 
 `orkx plugin check` prints every field of every one of them.
 
@@ -222,14 +224,19 @@ anything about it.
 **"Working with the Copilot coding agent"** — starting a task, following it,
 and steering it without losing it. A fix to a pull request Copilot opened goes
 to that pull request's session with `messageAgentTask`, never to a new PR or a
-new task.
+new task. Handing work over is said first - what was done and the session
+link - and only then is the PR followed. Once Copilot has finished, the build is green and a review finds
+nothing to object to, the agent takes the PR out of draft with
+`markReadyForReview` - and leaves it a draft otherwise.
 
 **"Getting a pull request build green"**, id `autofix-build` — waiting for a
 PR's checks with `finish_answer`'s `wake_after_ms` rather than polling, reading
 which check failed and what it said, and then either fixing it or handing it to
 Copilot with `messageAgentTask` on that same pull request. Never
 `createAgentTask` for a fix: that opens a second draft PR, and then the red one
-is still red. It pins its id, because an agent node watching a PR names it.
+is still red. On green, a Copilot draft that a review finds nothing wrong with
+is taken out of draft. It pins its id, because an agent node watching a PR
+names it.
 
 All three are granted like any other skill catalog; nothing is automatic.
 

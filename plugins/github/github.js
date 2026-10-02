@@ -571,6 +571,41 @@ export default class Github extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'ThreadComment',
+        description: 'One comment on a pull request - in a review thread or in the conversation.',
+        properties: [
+          { name: 'id', kind: 'number', description: 'What replyToComment takes, for a comment in a review thread.' },
+          { name: 'author', kind: 'string', description: 'The login that wrote it.' },
+          { name: 'body', kind: 'string', description: 'What it says, as GitHub markdown.' },
+          { name: 'created', kind: 'string', description: 'When, as ISO 8601.' },
+          { name: 'url', kind: 'string', description: 'The link for a person to open.' },
+        ],
+      }),
+
+      new OrknuxObject({
+        name: 'ReviewThread',
+        description: 'One conversation anchored to a file in the diff, oldest comment first.',
+        properties: [
+          { name: 'path', kind: 'string', description: 'The file it is about.' },
+          { name: 'line', kind: 'number', description: 'The line in the new version; null for a whole-file comment or an outdated one.' },
+          { name: 'resolved', kind: 'boolean', description: 'Whether somebody marked it resolved.' },
+          { name: 'outdated', kind: 'boolean', description: 'Whether the code it was about has since changed.' },
+          { name: 'comments', kind: 'array', of: 'ThreadComment', description: 'The first is the one that opened it.' },
+        ],
+      }),
+
+      new OrknuxObject({
+        name: 'PullComments',
+        description: 'Everything said on a pull request outside the review summaries.',
+        properties: [
+          { name: 'threads', kind: 'array', of: 'ReviewThread', description: 'Comments on the diff, by thread.' },
+          { name: 'unresolved', kind: 'number', description: 'How many threads nobody has marked resolved.' },
+          { name: 'conversation', kind: 'array', of: 'ThreadComment', description: 'Comments under the conversation, oldest first.' },
+          { name: 'truncated', kind: 'boolean', description: 'True where there were more than 100 threads or 100 comments, and the rest are left out.' },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'PullText',
         description: 'A pull request\'s title and description, as they stand after an edit.',
         properties: [
@@ -662,6 +697,29 @@ The agent cannot ask you a question. Everything it needs is in the prompt, so
 say which files if you know them, what "done" looks like, and what must not
 change. A vague prompt comes back as a vague diff an hour later.
 
+## Say what you did first, then watch
+
+Copilot takes many minutes, and whoever asked should not spend them wondering
+whether anything happened. So the moment the work is handed over, tell them -
+briefly, before you start following it:
+
+- **what you did**: delegated the task to Copilot, or asked it to change
+  something on its pull request;
+- **where to watch it**: the \`url\` \`github_createAgentTask\` answers is the
+  session link, and the comment \`github_messageAgentTask\` posts has a
+  \`url\` of its own;
+- **what happens next**: that you will follow it and come back when it is
+  done or stuck.
+
+Two or three lines, in the conversation they asked in - not a comment on the
+pull request, which notifies everybody on it. For example: *"Delegated to
+Copilot - session: <url>. I'll watch the PR and report back when it's ready or
+needs you."*
+
+Do this **before** the first wait. A wait ends your turn, and what you write
+with it is a note to yourself rather than a reply - so feedback left for after
+the wait reaches nobody until the whole job is over.
+
 ## Following it
 
 \`github_agentTask\` answers the current state — \`queued\`, \`in_progress\`,
@@ -704,11 +762,39 @@ Check who opened it first: the pull request's author is Copilot's bot account,
 or it is the PR \`github_agentTask\` names for a task you started. For a pull
 request a person opened, say what needs fixing on the PR instead - it is theirs.
 
-## Before you accept it
+## When it is done: review it, then take it out of draft
 
-It opened a draft PR, which means review it like any other — the previous
-skill applies unchanged. \`github_buildStatus\` on its head sha, read the whole
-diff, and remember the agent had no more context than your prompt gave it.
+Copilot opens its pull request as a **draft**, and a draft asks nobody for
+review - so a finished change left in draft just sits there. Taking it out of
+draft is your job, and it is the last step, once all of these hold:
+
+1. **Copilot has finished.** \`github_agentTask\` says \`completed\` - not
+   \`in_progress\`, and not \`waiting_for_user\`, which is it waiting on you.
+2. **The build is green.** \`github_buildStatus\` on the head sha that
+   \`github_openPull\` answers right now says \`success\`. Not the sha you
+   saw earlier: if it moved, Copilot pushed again and that is the build to read.
+3. **You reviewed it and have nothing to object to.** Read the whole diff
+   \`github_openPull\` answers, not the title and the first file; look up what
+   a changed function does now with \`github_openFile\` at the head sha before
+   questioning it; and check the change does what the task asked and nothing it
+   was told to leave alone. Remember the agent had no more context than the
+   prompt gave it. And \`github_pullComments\`: \`unresolved\` should be 0 -
+   an open thread is somebody's objection that nobody has answered yet, and
+   that is a complaint even when it is not yours.
+
+Then:
+
+    github_markReadyForReview {"owner": "acme", "repo": "api", "number": 412}
+
+It answers \`draft\` - \`false\` is the proof it moved, so say it is ready
+for review only after seeing that. If it refuses, say so; do not claim it
+moved.
+
+**If any of the three does not hold, leave it a draft.** Something to object
+to goes back to Copilot with \`github_messageAgentTask\` on that same pull
+request, as one clear instruction, and the three checks start again when it
+has pushed. A pull request a person opened is theirs: say what you found on it,
+and leave its draft state to them.
 
 ## One limit worth knowing
 
@@ -842,6 +928,11 @@ printed, and what must not change. Five requests in one comment get partly done.
 
 ## After you have asked
 
+Tell whoever is waiting what you did before you wait: which check failed, that
+you handed it to Copilot on this pull request, and the \`url\` of the comment
+\`github_messageAgentTask\` answered. Two lines, where they asked - a wait
+ends your turn, and its note reaches only you.
+
 Wait longer than you would for CI alone — Copilot reads, edits and pushes, and
 only then does CI run again. On waking, \`github_openPull\` first: a moved head
 sha means it pushed, and you are watching a new build.
@@ -855,7 +946,12 @@ which is usually the explanation for a fix that missed.
 Stopping well is most of what makes this safe to leave running:
 
 - **Green** — finish. One comment at most, and only where somebody is waiting
-  to hear it.
+  to hear it. If the pull request is a Copilot draft, its task is \`completed\`,
+  and you have read the whole diff and have nothing to object to, take it out
+  of draft first: \`github_markReadyForReview\` with the owner, repo and number,
+  and see \`draft\` come back \`false\` before saying so. Anything you would
+  object to goes back to Copilot on the same pull request, and it stays a
+  draft.
 - **The same check failing after the same instruction twice** — stop asking.
   Say on the PR what fails, what was tried and what you think it needs
   (\`github_comment\`), and finish. A third identical comment to an agent that
@@ -899,6 +995,8 @@ minutes for everybody on the PR.`,
       new OrknuxFunctionTool({ function: 'comment' }),
       new OrknuxFunctionTool({ function: 'reviewComment' }),
       new OrknuxFunctionTool({ function: 'replyToComment' }),
+      new OrknuxFunctionTool({ function: 'pullComments' }),
+      new OrknuxFunctionTool({ function: 'approve' }),
       new OrknuxFunctionTool({ function: 'editPull' }),
       new OrknuxFunctionTool({ function: 'markReadyForReview' }),
       new OrknuxFunctionTool({ function: 'convertToDraft' }),
@@ -1688,6 +1786,123 @@ minutes for everybody on the PR.`,
       }),
 
       new OrknuxFunction({
+        name: 'pullComments',
+        description:
+          'Reads what was said on a pull request besides the review summaries: every comment on the ' +
+          'diff, grouped into threads with the file, the line, and whether each thread is resolved or ' +
+          'outdated - and the comments under the conversation. Pass owner and repo (or the repo as ' +
+          'owner/name, or an empty owner for the configured organization) and the PR number. ' +
+          'unresolved counts the threads still open. A comment\'s id in a thread is what ' +
+          'replyToComment takes. Who approved is reviews\' answer, not this.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'number', type: 'number' },
+        ],
+        returnType: 'PullComments',
+        run: (owner, repo, number) => {
+          const [who, name] = repoParts(this.settings, owner, repo);
+          /*
+           * GraphQL rather than REST, because only GraphQL knows a thread is
+           * resolved: REST hands back loose comments with a reply pointer,
+           * and "is anything still open" is the question this is asked.
+           */
+          const data = graphql(
+            this.settings,
+            `query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100) {
+                    pageInfo { hasNextPage }
+                    nodes {
+                      path line isResolved isOutdated
+                      comments(first: 100) {
+                        pageInfo { hasNextPage }
+                        nodes { databaseId author { login } body createdAt url }
+                      }
+                    }
+                  }
+                  comments(first: 100) {
+                    pageInfo { hasNextPage }
+                    nodes { databaseId author { login } body createdAt url }
+                  }
+                }
+              }
+            }`,
+            { owner: who, name: name, number: number },
+          );
+          const pull = at(at(data, 'repository'), 'pullRequest');
+          if (pull === null) {
+            throw new Error(`there is no pull request ${number} in ${who}/${name}`);
+          }
+          const comment = (one) => ({
+            id: at(one, 'databaseId'),
+            author: at(at(one, 'author'), 'login'),
+            body: at(one, 'body'),
+            created: at(one, 'createdAt'),
+            url: at(one, 'url'),
+          });
+          const held = at(pull, 'reviewThreads');
+          const said = at(pull, 'comments');
+          let truncated =
+            at(at(held, 'pageInfo'), 'hasNextPage') === true || at(at(said, 'pageInfo'), 'hasNextPage') === true;
+          const threads = (at(held, 'nodes') ?? []).map((one) => {
+            const inside = at(one, 'comments');
+            truncated = truncated || at(at(inside, 'pageInfo'), 'hasNextPage') === true;
+            return {
+              path: at(one, 'path'),
+              line: at(one, 'line'),
+              resolved: at(one, 'isResolved') === true,
+              outdated: at(one, 'isOutdated') === true,
+              comments: (at(inside, 'nodes') ?? []).map(comment),
+            };
+          });
+          return {
+            threads: threads,
+            unresolved: threads.filter((one) => !one.resolved).length,
+            conversation: (at(said, 'nodes') ?? []).map(comment),
+            truncated: truncated,
+          };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'approve',
+        description:
+          'Approves a pull request: a review with the verdict "approve", as whoever the token belongs ' +
+          'to. Pass owner and repo (or the repo as owner/name, or an empty owner for the configured ' +
+          'organization), the PR number, and optionally a note to go with it as GitHub markdown. ' +
+          'Approve only what you have read whole and would merge. GitHub refuses an approval of a ' +
+          'pull request the token\'s own account opened. Answers the review as reviews lists it.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'number', type: 'number' },
+          { name: 'text', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'Review',
+        run: (owner, repo, number, text) => {
+          const base = repoPath(this.settings, owner, repo);
+          const body = { event: 'APPROVE' };
+          if (typeof text === 'string' && text.length > 0) {
+            body.body = text;
+          }
+          const made = read(this.settings, {
+            method: 'POST',
+            path: `${base}/pulls/${number}/reviews`,
+            body: body,
+          }).json;
+          return {
+            user: at(at(made, 'user'), 'login'),
+            state: at(made, 'state'),
+            submitted: at(made, 'submitted_at'),
+            body: at(made, 'body'),
+            url: at(made, 'html_url'),
+          };
+        },
+      }),
+
+      new OrknuxFunction({
         name: 'editPull',
         description:
           'Changes a pull request\'s title, its description, or both. Pass owner and repo (or the repo as ' +
@@ -1767,6 +1982,12 @@ minutes for everybody on the PR.`,
       }),
     ];
   }
+}
+
+/** The owner and name a repository call means, unencoded - what GraphQL takes. */
+function repoParts(settings, owner, repo) {
+  const parts = repoPath(settings, owner, repo).split('/');
+  return [decodeURIComponent(parts[2]), decodeURIComponent(parts[3])];
 }
 
 /**

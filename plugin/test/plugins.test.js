@@ -142,6 +142,8 @@ test('the github plugin declares what the server would accept', async () => {
     'comment',
     'reviewComment',
     'replyToComment',
+    'pullComments',
+    'approve',
     'editPull',
     'markReadyForReview',
     'convertToDraft',
@@ -167,6 +169,93 @@ test('the github plugin declares what the server would accept', async () => {
     assert.equal(declared.returnType, fronted.returnType);
     assert.equal(declared.description, fronted.description);
   }
+});
+
+test('github pullComments groups the diff comments into threads and counts the open ones', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const plugin = Object.create(Github.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ token: 'ghp_x', organization: 'acme' }) });
+  const run = (name, ...args) => plugin.functions().find((one) => one.name === name).run(...args);
+
+  const said = (id, login, body) => ({
+    databaseId: id,
+    author: { login },
+    body,
+    createdAt: '2026-10-03T09:00:00Z',
+    url: `https://github.com/acme/api/pull/7#discussion_r${id}`,
+  });
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  let read;
+  let approved;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      if (what.url.endsWith('/graphql')) {
+        return {
+          status: 200,
+          headers: {},
+          body: '{}',
+          json: {
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    pageInfo: { hasNextPage: false },
+                    nodes: [
+                      {
+                        path: 'src/rates.py',
+                        line: 12,
+                        isResolved: false,
+                        isOutdated: false,
+                        comments: { pageInfo: { hasNextPage: false }, nodes: [said(1, 'ada', 'why?'), said(2, 'copilot', 'because')] },
+                      },
+                      {
+                        path: 'README.md',
+                        line: null,
+                        isResolved: true,
+                        isOutdated: true,
+                        comments: { pageInfo: { hasNextPage: false }, nodes: [said(3, 'bob', 'typo')] },
+                      },
+                    ],
+                  },
+                  comments: { pageInfo: { hasNextPage: true }, nodes: [said(4, 'cora', 'lgtm')] },
+                },
+              },
+            },
+          },
+        };
+      }
+      return {
+        status: 200,
+        headers: {},
+        body: '{}',
+        json: { user: { login: 'oko' }, state: 'APPROVED', submitted_at: '2026-10-03T10:00:00Z', body: 'ok', html_url: 'https://github.com/acme/api/pull/7#pullrequestreview-9' },
+      };
+    };
+    read = run('pullComments', '', 'acme/api', 7);
+    approved = run('approve', '', 'api', 7, 'ok');
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  /* The repository travels as GraphQL variables, unencoded, not as a path. */
+  assert.deepEqual(asked[0].body.variables, { owner: 'acme', name: 'api', number: 7 });
+  assert.equal(read.unresolved, 1);
+  assert.equal(read.truncated, true);
+  assert.deepEqual(read.threads[0].comments.map((one) => [one.id, one.author]), [[1, 'ada'], [2, 'copilot']]);
+  assert.deepEqual(
+    [read.threads[1].path, read.threads[1].line, read.threads[1].resolved, read.threads[1].outdated],
+    ['README.md', null, true, true],
+  );
+  assert.equal(read.conversation[0].body, 'lgtm');
+
+  /* Approving is a review with the verdict, sent where reviews go. */
+  assert.equal(asked[1].method, 'POST');
+  assert.equal(asked[1].url, 'https://api.github.com/repos/acme/api/pulls/7/reviews');
+  assert.deepEqual(asked[1].body, { event: 'APPROVE', body: 'ok' });
+  assert.equal(approved.state, 'APPROVED');
 });
 
 test('github editPull sends only what was given, and refuses to send nothing', async () => {
