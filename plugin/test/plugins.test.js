@@ -142,6 +142,8 @@ test('the github plugin declares what the server would accept', async () => {
     'comment',
     'reviewComment',
     'replyToComment',
+    'markReadyForReview',
+    'convertToDraft',
   ];
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
@@ -164,6 +166,79 @@ test('the github plugin declares what the server would accept', async () => {
     assert.equal(declared.returnType, fronted.returnType);
     assert.equal(declared.description, fronted.description);
   }
+});
+
+test('github takes a draft to review through GraphQL, and leaves one already there alone', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const withSettings = (settings) => {
+    const plugin = Object.create(Github.prototype);
+    Object.defineProperty(plugin, 'settings', { value: Object.freeze(settings) });
+    return (name) => plugin.functions().find((one) => one.name === name);
+  };
+
+  const asked = [];
+  let draft = true;
+  const door = globalThis.orknux.http.request;
+  let moved;
+  let unmoved;
+  let enterprise;
+  let refused;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      if (what.url.endsWith('/graphql')) {
+        return {
+          status: 200,
+          headers: {},
+          body: '{}',
+          json: { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false, url: 'https://github.com/acme/api/pull/7' } } } },
+        };
+      }
+      return {
+        status: 200,
+        headers: {},
+        body: '{}',
+        json: { number: 7, draft: draft, state: 'open', node_id: 'PR_kw7', html_url: 'https://github.com/acme/api/pull/7' },
+      };
+    };
+    moved = withSettings({ token: 'ghp_x', organization: 'acme' })('markReadyForReview').run('', 'api', 7);
+
+    /* Already out of draft: answered as it is, and no mutation sent. */
+    draft = false;
+    const before = asked.length;
+    unmoved = withSettings({ token: 'ghp_x', organization: 'acme' })('markReadyForReview').run('', 'api', 7);
+    assert.equal(asked.length, before + 1);
+
+    /* An Enterprise Server answers GraphQL beside /api, not under /api/v3. */
+    draft = true;
+    withSettings({ token: 'ghp_x', organization: 'acme', apiUrl: 'https://ghes.example.com/api/v3' })(
+      'markReadyForReview',
+    ).run('', 'api', 7);
+    enterprise = asked.at(-1).url;
+
+    /* A refusal comes back as a 200 with errors, and is still a refusal. */
+    globalThis.orknux.http.request = (what) =>
+      what.url.endsWith('/graphql')
+        ? { status: 200, headers: {}, body: '{}', json: { errors: [{ message: 'Resource not accessible by integration' }] } }
+        : { status: 200, headers: {}, body: '{}', json: { number: 7, draft: true, state: 'open', node_id: 'PR_kw7' } };
+    try {
+      withSettings({ token: 'ghp_x', organization: 'acme' })('markReadyForReview').run('', 'api', 7);
+    } catch (thrown) {
+      refused = thrown;
+    }
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  assert.deepEqual(moved, { number: 7, draft: false, url: 'https://github.com/acme/api/pull/7' });
+  assert.equal(asked[1].url, 'https://api.github.com/graphql');
+  assert.equal(asked[1].method, 'POST');
+  assert.match(asked[1].body.query, /markPullRequestReadyForReview/);
+  assert.deepEqual(asked[1].body.variables, { id: 'PR_kw7' });
+  assert.deepEqual(unmoved, { number: 7, draft: false, url: 'https://github.com/acme/api/pull/7' });
+  assert.equal(enterprise, 'https://ghes.example.com/api/graphql');
+  assert.match(refused.message, /Resource not accessible by integration/);
 });
 
 test('github reviews answer where each person stands, not what they last did', async () => {

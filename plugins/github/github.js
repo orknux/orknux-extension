@@ -97,6 +97,7 @@ import {
   call,
   changedFile,
   escapedPath,
+  graphql,
   header,
   ownerOr,
   pageSize,
@@ -568,6 +569,16 @@ export default class Github extends OrknuxPlugin {
           { name: 'url', kind: 'string', description: 'The link for a person to open.' },
         ],
       }),
+
+      new OrknuxObject({
+        name: 'DraftState',
+        description: 'A pull request after its draft state was set.',
+        properties: [
+          { name: 'number', kind: 'number', description: 'Which pull request.' },
+          { name: 'draft', kind: 'boolean', description: 'Whether it is a draft now - false means it asks for review.' },
+          { name: 'url', kind: 'string', description: 'The link for a person to open.' },
+        ],
+      }),
     ];
   }
 
@@ -877,6 +888,8 @@ minutes for everybody on the PR.`,
       new OrknuxFunctionTool({ function: 'comment' }),
       new OrknuxFunctionTool({ function: 'reviewComment' }),
       new OrknuxFunctionTool({ function: 'replyToComment' }),
+      new OrknuxFunctionTool({ function: 'markReadyForReview' }),
+      new OrknuxFunctionTool({ function: 'convertToDraft' }),
     ];
   }
 
@@ -1661,6 +1674,66 @@ minutes for everybody on the PR.`,
           return { id: at(made, 'id'), url: at(made, 'html_url') };
         },
       }),
+
+      new OrknuxFunction({
+        name: 'markReadyForReview',
+        description:
+          'Takes a pull request out of draft, so it asks for review: what the site\'s "Ready for review" ' +
+          'button does. Pass owner and repo (or the repo as owner/name, or an empty owner for the ' +
+          'configured organization) and the PR number. Answers the number, whether it is still a draft ' +
+          'and its url - draft false is the proof it moved. A PR already out of draft is left as it is.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'number', type: 'number' },
+        ],
+        returnType: 'DraftState',
+        run: (owner, repo, number) => drafted(this.settings, owner, repo, number, false),
+      }),
+
+      new OrknuxFunction({
+        name: 'convertToDraft',
+        description:
+          'Puts a pull request back into draft, so it stops asking for review while work goes on. Pass ' +
+          'owner and repo (or the repo as owner/name, or an empty owner for the configured ' +
+          'organization) and the PR number. Answers the number, whether it is now a draft and its url. ' +
+          'A PR already in draft is left as it is.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'number', type: 'number' },
+        ],
+        returnType: 'DraftState',
+        run: (owner, repo, number) => drafted(this.settings, owner, repo, number, true),
+      }),
     ];
   }
+}
+
+/**
+ * A pull request moved into or out of draft, and what it is afterwards.
+ *
+ * REST can read `draft` and cannot change it - a PATCH with `draft` is
+ * silently ignored - so the move is GraphQL's two mutations, addressed by the
+ * node id the REST read already carries. A PR already where it was asked to be
+ * is answered as it is rather than sent a mutation GitHub would refuse.
+ */
+function drafted(settings, owner, repo, number, draft) {
+  const base = repoPath(settings, owner, repo);
+  const pull = read(settings, { path: `${base}/pulls/${number}` }).json;
+  const state = { number: at(pull, 'number'), draft: at(pull, 'draft') === true, url: at(pull, 'html_url') };
+  if (state.draft === draft) {
+    return state;
+  }
+  if (at(pull, 'state') !== 'open') {
+    throw new Error(`pull request ${number} is ${at(pull, 'merged') === true ? 'merged' : 'closed'}, so its draft state cannot change`);
+  }
+  const mutation = draft ? 'convertPullRequestToDraft' : 'markPullRequestReadyForReview';
+  const data = graphql(
+    settings,
+    `mutation($id: ID!) { ${mutation}(input: { pullRequestId: $id }) { pullRequest { isDraft url } } }`,
+    { id: at(pull, 'node_id') },
+  );
+  const moved = at(at(data, mutation), 'pullRequest');
+  return { number: state.number, draft: at(moved, 'isDraft') === true, url: at(moved, 'url') ?? state.url };
 }

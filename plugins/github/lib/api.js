@@ -54,7 +54,7 @@ export function call(settings, asked) {
   }
 
   const answered = orknux.http.request({
-    url: apiRoot(settings) + asked.path,
+    url: asked.url === undefined ? apiRoot(settings) + asked.path : asked.url,
     method: asked.method === undefined ? 'GET' : asked.method,
     headers: {
       accept: asked.accept === undefined ? 'application/vnd.github+json' : asked.accept,
@@ -67,6 +67,42 @@ export function call(settings, asked) {
     throw new Error(`could not reach GitHub: ${answered.error}`);
   }
   return answered;
+}
+
+/**
+ * Where GraphQL answers: beside the REST root on github.com, and at
+ * `/api/graphql` on an Enterprise Server, whose REST root is `/api/v3`.
+ */
+function graphqlUrl(settings) {
+  const rest = apiRoot(settings);
+  return rest.endsWith('/v3') ? rest.slice(0, -'/v3'.length) + '/graphql' : rest + '/graphql';
+}
+
+/**
+ * One GraphQL operation, answered with its `data` or thrown.
+ *
+ * Only for what REST cannot do - taking a pull request out of draft is the
+ * case that brought it here. GraphQL says no with a 200 and an `errors` list
+ * as often as with a status, so both are read as a refusal.
+ */
+export function graphql(settings, query, variables) {
+  const answered = call(settings, {
+    url: graphqlUrl(settings),
+    path: '/graphql',
+    method: 'POST',
+    body: { query: query, variables: variables },
+  });
+  const errors = at(answered.json, 'errors');
+  if (answered.status >= 400 || (Array.isArray(errors) && errors.length > 0)) {
+    const said = (Array.isArray(errors) ? errors : [])
+      .map((one) => at(one, 'message'))
+      .filter((one) => typeof one === 'string');
+    if (said.length === 0) {
+      throw statusError(answered, '/graphql');
+    }
+    throw new Error(`GitHub answered ${answered.status}: ${said.join('; ')} for /graphql`);
+  }
+  return at(answered.json, 'data');
 }
 
 /** The sentence a 4xx or 5xx becomes, carrying GitHub's own words where it said any. */
