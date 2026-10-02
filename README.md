@@ -86,18 +86,6 @@ Each folder holds the plugin, its `plugin.json` marketplace manifest, the
 `README.md` that manifest names and the two icons — one file each, as the
 server loads them.
 
-### What used to be here
-
-`mermaid`, `plantuml`, `nomnoml`, `charts`, `pdf`, `markdown` and `date` were
-plugins and are now the server's own. A drawing, a document and a calendar are
-things the product needs rather than things a workspace chooses, and each was
-paying the sandbox's price for it: a hand-written mermaid parser that knew five
-diagram kinds, fonts carried as base64 subsets, a chart that could not get into
-a page because the two bundles had a session store between them. The names an
-agent calls are unchanged — `pdf_fromHtml` is still `pdf_fromHtml` — so nothing
-written against them has to be rewritten. Their history is in this repository
-up to the commit that took them out.
-
 ## Working here
 
 There is no Node on the development machine. Everything goes through the compose
