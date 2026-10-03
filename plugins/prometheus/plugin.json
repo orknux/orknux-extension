@@ -9,7 +9,7 @@
     "monitoring"
   ],
   "summary": "Ask what the system is doing, from a condition or an agent.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }

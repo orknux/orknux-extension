@@ -3003,8 +3003,9 @@ test('prometheus asks whichever server the call names', async () => {
         : { status: 'success', data: { resultType: 'vector', result: [] } };
       return { status: 200, headers: {}, body: JSON.stringify(json), json };
     };
-    call('query').run(production, 'up', '');
-    metrics = call('listMetrics').run(staging, '', 1);
+    /* What a model writes for "now" and for "everything" - both of which Prometheus refuses. */
+    call('query').run(production, 'up', ' Now ');
+    metrics = call('listMetrics').run(staging, '{}', 1);
   } finally {
     globalThis.orknux.http.get = front;
   }

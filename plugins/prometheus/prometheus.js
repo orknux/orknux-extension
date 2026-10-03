@@ -177,23 +177,29 @@ export default class Prometheus extends OrknuxPlugin {
         name: 'listMetrics',
         description:
           'Lists the metric names the server knows, alphabetically - the vocabulary a query is written ' +
-          'in. match narrows the list to the series a selector matches, like {job="api"} - or pass an ' +
-          'empty match for everything. Answers the names and how many there were before limit capped ' +
-          'them; leave limit out for no cap.',
+          'in. match narrows the list to the series a selector matches, like {job="api"}; leave it out ' +
+          'for everything. Answers the names and how many there were before limit capped them; leave ' +
+          'limit out for no cap.',
         params: [
           {
             name: 'prometheus',
             type: 'connection',
             description: 'Which Prometheus to ask: a Prometheus connection, which carries its address and auth.',
           },
-          { name: 'match', type: 'string' },
+          { name: 'match', type: 'string', required: false, default: '' },
           { name: 'limit', type: 'number', required: false, default: 0 },
         ],
         returnType: 'Metrics',
         run: (prometheus, match, limit) => {
           let path = '/api/v1/label/__name__/values';
-          if (typeof match === 'string' && match.length > 0) {
-            path += `?match[]=${encodeURIComponent(match)}`;
+          /*
+           * `{}` is what a model writes for "match everything", and Prometheus
+           * refuses it - a selector has to hold at least one matcher - so it
+           * means what it was meant to: no narrowing at all.
+           */
+          const selector = typeof match === 'string' ? match.trim() : '';
+          if (selector.length > 0 && selector !== '{}') {
+            path += `?match[]=${encodeURIComponent(selector)}`;
           }
           const names = read(prometheus, path);
           const metrics = Array.isArray(names) ? names : [];
@@ -208,7 +214,8 @@ export default class Prometheus extends OrknuxPlugin {
         description:
           'Executes a PromQL expression as an instant query: rate(http_requests_total[5m]), ' +
           'up{job="api"}, histogram_quantile(0.99, ...) - anything the expression browser takes. ' +
-          'Evaluated now, or at `time` when one is given (RFC 3339 or a unix timestamp). Answers Prometheus\'s own result: resultType (vector, matrix, scalar or string) and ' +
+          'Evaluated now; to evaluate at another moment pass time, as RFC 3339 or a unix timestamp. ' +
+          'Answers Prometheus\'s own result: resultType (vector, matrix, scalar or string) and ' +
           'result, where each vector element is {metric: {labels}, value: [time, "value"]}.',
         params: [
           {
@@ -225,8 +232,13 @@ export default class Prometheus extends OrknuxPlugin {
             throw new Error('there is no expression to execute');
           }
           let path = `/api/v1/query?query=${encodeURIComponent(promql)}`;
-          if (typeof time === 'string' && time.length > 0) {
-            path += `&time=${encodeURIComponent(time)}`;
+          /*
+           * "now" is the answer a model gives when asked when, and Prometheus
+           * cannot parse it - it is also exactly what leaving time out means.
+           */
+          const moment = typeof time === 'string' ? time.trim() : '';
+          if (moment.length > 0 && moment.toLowerCase() !== 'now') {
+            path += `&time=${encodeURIComponent(moment)}`;
           }
           const data = read(prometheus, path);
           /*
