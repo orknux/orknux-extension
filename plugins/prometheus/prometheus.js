@@ -6,8 +6,8 @@
  * this job up, what metrics are there to ask about at all. Prometheus answers
  * over HTTP, and a plugin has no network, deliberately and permanently — so
  * both calls here are made by the *server* on the plugin's behalf, under the
- * NETWORK_REQUEST capability a person accepted, against the Prometheus the
- * workspace named.
+ * NETWORK_REQUEST capability a person accepted, against the Prometheus each
+ * call names.
  *
  * ## Setting one up
  *
@@ -17,17 +17,19 @@
  *    installation's proxy rules allow the server to reach.
  * 3. A bare Prometheus needs no auth. One behind a token takes Bearer; a
  *    Grafana Cloud endpoint takes Basic with `instanceId:token` as the secret.
- * 4. Point the plugin's `prometheus` parameter at that connection.
+ * 4. Pick that connection as the `prometheus` argument of the call - a
+ *    workflow from the picker, an agent by the connection's id.
  *
- * ## Why a connection and not three settings
+ * ## Why the connection is an argument and not a setting
  *
- * The address and the credential used to be the plugin's own parameters, so a
- * workspace had exactly one Prometheus and its token sat on the plugin's page.
- * A connection is where a workspace already keeps hosts: encrypted, checked,
- * one row per server — and a kind of its own keeps the picker to Prometheus
- * servers rather than every HTTP endpoint there is. Because the kind is this
- * plugin's, the server hands its address and headers across with the handle;
- * nothing but this plugin knows how to speak to it.
+ * A workspace with production, staging and a Thanos in front of both has three
+ * Prometheus servers, and a plugin setting names one. So every call says which
+ * it asks, the way every Slack call says which Slack. A connection is where a
+ * workspace already keeps hosts: encrypted, checked, one row per server - and
+ * a kind of its own keeps the picker to Prometheus servers rather than every
+ * HTTP endpoint there is. Because the kind is this plugin's, the server hands
+ * its address and headers across with the handle; nothing but this plugin
+ * knows how to speak to it.
  *
  * Licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
@@ -43,23 +45,22 @@ function at(holder, name) {
 }
 
 /**
- * The connection the workspace pointed this plugin at, with its address.
+ * The connection a call named, with its address.
  *
  * Only a connection of this plugin's own kind crosses with `url` and
- * `headers`; anything else arrives as a bare handle. So a handle without a url
- * is a connection this plugin cannot use - a plain HTTP one, or a server old
- * enough to hand every connection over as a name only - and saying which is
- * kinder than a request to `undefined/api/v1/...`.
+ * `headers`; anything else arrives as a bare handle, or as the id it was
+ * written as. So a connection without a url is one this plugin cannot use - a
+ * plain HTTP one, or a server old enough not to resolve a connection argument -
+ * and saying which is kinder than a request to `undefined/api/v1/...`.
  */
-function server(settings) {
-  const connection = settings.prometheus;
-  if (connection === undefined || connection === null) {
-    throw new Error("the plugin's prometheus parameter is not set, and every Prometheus call needs it");
+function server(connection) {
+  if (connection === undefined || connection === null || connection === '') {
+    throw new Error('no Prometheus connection was given, and every Prometheus call needs one');
   }
-  if (typeof connection.url !== 'string' || connection.url.length === 0) {
+  if (typeof connection !== 'object' || typeof connection.url !== 'string' || connection.url.length === 0) {
     throw new Error(
-      "the prometheus parameter names a connection that is not a Prometheus connection of this plugin's " +
-        'kind, so its address never reached the plugin - point it at a Prometheus connection, on a server ' +
+      "the prometheus argument names a connection that is not a Prometheus connection of this plugin's " +
+        'kind, so its address never reached the plugin - pass a Prometheus connection, on a server ' +
         'that hands one over',
     );
   }
@@ -87,8 +88,8 @@ function headers(connection) {
  * own `error` field — often beside a 4xx, but checked on its own because a
  * proxy in front can turn anything into a 200.
  */
-function read(settings, path) {
-  const connection = server(settings);
+function read(prometheus, path) {
+  const connection = server(prometheus);
   const answered = orknux.http.get(root(connection) + path, headers(connection));
   if (answered.error !== undefined) {
     throw new Error(`could not reach Prometheus: ${answered.error}`);
@@ -114,7 +115,7 @@ export default class Prometheus extends OrknuxPlugin {
 
   /*
    * The kind of host this plugin talks to, so a workspace can hold several
-   * Prometheus servers by name rather than one url on the plugin's page.
+   * Prometheus servers by name and a call can say which one it asks.
    */
   connectionTypes() {
     return [
@@ -125,18 +126,6 @@ export default class Prometheus extends OrknuxPlugin {
           'A Prometheus server to query - or anything speaking its HTTP API, such as Grafana Cloud or Thanos.',
         urlPlaceholder: 'http://prometheus:9090',
       },
-    ];
-  }
-
-  parameters() {
-    return [
-      new OrknuxParameter({
-        name: 'prometheus',
-        description: 'Which Prometheus to ask: a Prometheus connection, which carries its address and auth.',
-        type: 'connection',
-        connectionType: 'prometheus',
-        required: true,
-      }),
     ];
   }
 
@@ -192,16 +181,21 @@ export default class Prometheus extends OrknuxPlugin {
           'empty match for everything. Answers the names and how many there were before limit capped ' +
           'them; leave limit out for no cap.',
         params: [
+          {
+            name: 'prometheus',
+            type: 'connection',
+            description: 'Which Prometheus to ask: a Prometheus connection, which carries its address and auth.',
+          },
           { name: 'match', type: 'string' },
           { name: 'limit', type: 'number', required: false, default: 0 },
         ],
         returnType: 'Metrics',
-        run: (match, limit) => {
+        run: (prometheus, match, limit) => {
           let path = '/api/v1/label/__name__/values';
           if (typeof match === 'string' && match.length > 0) {
             path += `?match[]=${encodeURIComponent(match)}`;
           }
-          const names = read(this.settings, path);
+          const names = read(prometheus, path);
           const metrics = Array.isArray(names) ? names : [];
           /* Zero is this one's real answer rather than a sentinel: no cap. */
           const capped = limit > 0 ? metrics.slice(0, limit) : metrics;
@@ -217,11 +211,16 @@ export default class Prometheus extends OrknuxPlugin {
           'Evaluated now, or at `time` when one is given (RFC 3339 or a unix timestamp). Answers Prometheus\'s own result: resultType (vector, matrix, scalar or string) and ' +
           'result, where each vector element is {metric: {labels}, value: [time, "value"]}.',
         params: [
+          {
+            name: 'prometheus',
+            type: 'connection',
+            description: 'Which Prometheus to ask: a Prometheus connection, which carries its address and auth.',
+          },
           { name: 'promql', type: 'string' },
           { name: 'time', type: 'string', required: false, default: '' },
         ],
         returnType: 'map',
-        run: (promql, time) => {
+        run: (prometheus, promql, time) => {
           if (typeof promql !== 'string' || promql.trim().length === 0) {
             throw new Error('there is no expression to execute');
           }
@@ -229,7 +228,7 @@ export default class Prometheus extends OrknuxPlugin {
           if (typeof time === 'string' && time.length > 0) {
             path += `&time=${encodeURIComponent(time)}`;
           }
-          const data = read(this.settings, path);
+          const data = read(prometheus, path);
           /*
            * The result is Prometheus's own shape, passed through: a value like
            * `[1726000000, "0.95"]` is what every PromQL reader already knows

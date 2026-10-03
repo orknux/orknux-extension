@@ -7,13 +7,19 @@ metrics are there to ask about at all.
 It brings a connection kind of its own, **Prometheus**. Add one per server
 with the server's root as its URL: a bare Prometheus needs no auth, one behind
 a token takes Bearer, and a Grafana Cloud endpoint takes Basic with
-`instanceId:token` as the secret. Then point the plugin's `prometheus`
-parameter at the one to ask.
+`instanceId:token` as the secret.
 
-The address and the credential live on the connection rather than on the
-plugin's page, so they are kept encrypted, and a workspace can hold as many
-Prometheus servers as it has. Calls run through the server under
-`NETWORK_REQUEST`, so the installation's proxy rules govern where they may go.
+Every call takes the connection to ask as its first argument, `prometheus` -
+picked from a list in a workflow, passed by id from an agent. So production,
+staging and a Thanos in front of both are three connections in one workspace,
+and each call says which it means. There is nothing to configure on the
+plugin's own page.
 
-Coming from 0.4: the `url`, `username` and `token` parameters are gone. Make a
-Prometheus connection from them and point `prometheus` at it.
+The address and the credential live on the connection, so they are kept
+encrypted. Calls run through the server under `NETWORK_REQUEST`, so the
+installation's proxy rules govern where they may go.
+
+Coming from 0.5: the plugin's `prometheus` parameter is gone, and
+`listMetrics` and `query` take the connection as their first argument instead.
+A workflow calling either needs that argument set to the connection the
+parameter used to name.

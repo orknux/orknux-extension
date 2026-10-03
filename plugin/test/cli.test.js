@@ -58,7 +58,8 @@ test('the report names the kinds of connection a plugin declares, by the id a co
 
   assert.match(report, /It declares these kinds of connection:/);
   assert.match(report, /Prometheus {2}\(prometheus\/prometheus\)/);
-  assert.match(report, /connection to prometheus/);
+  /* Asked for per call rather than as a setting, so it shows in the signature. */
+  assert.match(report, /prometheus_query\(prometheus: connection, promql: string/);
 });
 
 test('the report names the skills a plugin brings, and what each is for', () => {
