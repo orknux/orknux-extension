@@ -16,7 +16,7 @@
  *
  * A plugin has no network, deliberately and permanently, so every call here is
  * made by the *server* on the plugin's behalf, under the NETWORK_REQUEST
- * capability a person accepted, against the Jenkins the workspace named.
+ * capability a person accepted, against the Jenkins each call names.
  *
  * ## Setting one up
  *
@@ -28,17 +28,19 @@
  *    `user:apiToken` as the secret. Jenkins authenticates a token *as
  *    somebody*, so the user is part of the credential rather than beside it.
  *    An anonymous instance takes no auth at all.
- * 4. Point the plugin's `jenkins` parameter at that connection.
+ * 4. Pick that connection as the `jenkins` argument of the call - a workflow
+ *    from the picker, an agent by the connection's id.
  *
- * ## Why a connection and not three settings
+ * ## Why the connection is an argument and not a setting
  *
- * The address and the credential used to be the plugin's own parameters, so a
- * workspace had exactly one Jenkins and its token was a plugin setting. A
- * connection is where a workspace already keeps hosts: encrypted, one row per
- * controller — and a kind of its own keeps the picker to Jenkins controllers
- * rather than every HTTP endpoint there is. Because the kind is this plugin's,
- * the server hands its address and headers across with the handle; nothing
- * but this plugin knows how to speak to it.
+ * Plenty of organisations run more than one controller - one per team, one
+ * for releases, an old one nobody has migrated off - and a plugin setting
+ * names one. So every call says which it asks, the way every Slack call says
+ * which Slack. A connection is where a workspace already keeps hosts:
+ * encrypted, one row per controller - and a kind of its own keeps the picker
+ * to Jenkins controllers rather than every HTTP endpoint there is. Because the
+ * kind is this plugin's, the server hands its address and headers across with
+ * the handle; nothing but this plugin knows how to speak to it.
  *
  * ## Three things about Jenkins' API worth knowing before reading this file
  *
@@ -99,6 +101,9 @@ const PERMALINKS = [
   'lastUnsuccessfulBuild',
 ];
 
+/** What every call's first argument is, said once rather than nine times. */
+const JENKINS = 'Which Jenkins to ask: a Jenkins connection, which carries its address and auth.';
+
 /** A nested field, or null rather than a thrown error on the way down. */
 function at(holder, name) {
   if (holder === null || typeof holder !== 'object') {
@@ -130,23 +135,22 @@ function header(answered, name) {
 }
 
 /**
- * The connection the workspace pointed this plugin at, with its address.
+ * The connection a call named, with its address.
  *
  * Only a connection of this plugin's own kind crosses with `url` and
- * `headers`; anything else arrives as a bare handle. So a handle without a url
- * is a connection this plugin cannot use - a plain HTTP one, or a server old
- * enough to hand every connection over as a name only - and saying which is
- * kinder than a request to `undefined/job/...`.
+ * `headers`; anything else arrives as a bare handle, or as the id it was
+ * written as. So a connection without a url is one this plugin cannot use - a
+ * plain HTTP one, or a server old enough not to resolve a connection argument -
+ * and saying which is kinder than a request to `undefined/job/...`.
  */
-function server(settings) {
-  const connection = settings.jenkins;
-  if (connection === undefined || connection === null) {
-    throw new Error("the plugin's jenkins parameter is not set, and every Jenkins call needs it");
+function server(connection) {
+  if (connection === undefined || connection === null || connection === '') {
+    throw new Error('no Jenkins connection was given, and every Jenkins call needs one');
   }
-  if (typeof connection.url !== 'string' || connection.url.length === 0) {
+  if (typeof connection !== 'object' || typeof connection.url !== 'string' || connection.url.length === 0) {
     throw new Error(
-      "the jenkins parameter names a connection that is not a Jenkins connection of this plugin's " +
-        'kind, so its address never reached the plugin - point it at a Jenkins connection, on a server ' +
+      "the jenkins argument names a connection that is not a Jenkins connection of this plugin's " +
+        'kind, so its address never reached the plugin - pass a Jenkins connection, on a server ' +
         'that hands one over',
     );
   }
@@ -154,8 +158,8 @@ function server(settings) {
 }
 
 /** The controller's root, without its trailing slash. */
-function root(settings) {
-  const configured = server(settings).url;
+function root(jenkins) {
+  const configured = server(jenkins).url;
   return configured.endsWith('/') ? configured.slice(0, -1) : configured;
 }
 
@@ -167,9 +171,9 @@ function root(settings) {
  * kind - Basic `user:apiToken`, which is Jenkins' one scheme - and carry none
  * at all for an instance read anonymously, so there is nothing to decide here.
  */
-function headers(settings, more) {
+function headers(jenkins, more) {
   const built = { accept: 'application/json' };
-  const sent = server(settings).headers;
+  const sent = server(jenkins).headers;
   if (sent !== null && typeof sent === 'object') {
     for (const key of Object.keys(sent)) {
       built[key] = sent[key];
@@ -207,11 +211,11 @@ function refusal(status, path, said) {
 }
 
 /** One call to Jenkins, authenticated, answered whole or thrown. */
-function call(settings, asked) {
+function call(jenkins, asked) {
   const answered = orknux.http.request({
-    url: root(settings) + asked.path,
+    url: root(jenkins) + asked.path,
     method: asked.method === undefined ? 'GET' : asked.method,
-    headers: headers(settings, asked.headers),
+    headers: headers(jenkins, asked.headers),
     body: asked.body,
   });
   if (answered.error !== undefined) {
@@ -228,8 +232,8 @@ function call(settings, asked) {
 }
 
 /** The same, for the calls that want the parsed body and nothing else. */
-function read(settings, path, notFound) {
-  return call(settings, { path: path, notFound: notFound }).json;
+function read(jenkins, path, notFound) {
+  return call(jenkins, { path: path, notFound: notFound }).json;
 }
 
 /**
@@ -247,8 +251,8 @@ function read(settings, path, notFound) {
  * protection is off, or that this credential may not ask. The POST that
  * follows says so itself, and says it about the thing actually being done.
  */
-function crumb(settings) {
-  const answered = orknux.http.get(root(settings) + '/crumbIssuer/api/json', headers(settings));
+function crumb(jenkins) {
+  const answered = orknux.http.get(root(jenkins) + '/crumbIssuer/api/json', headers(jenkins));
   if (answered.error !== undefined || answered.status >= 400) {
     return {};
   }
@@ -284,8 +288,8 @@ function isBuild(segment) {
  * `lastBuild` would answer confidently about something else.
  *
  * Only the path is read out of a url; the host is not. The request goes to the
- * connection this plugin was pointed at, so a link to a *different* Jenkins
- * names a job on this one, or nothing at all.
+ * connection the call named, so a link to a *different* Jenkins names a job on
+ * this one, or nothing at all.
  */
 function reference(job) {
   const asked = typeof job === 'string' ? job.trim() : String(job === null || job === undefined ? '' : job);
@@ -534,7 +538,7 @@ export default class Jenkins extends OrknuxPlugin {
 
   /*
    * The kind of host this plugin talks to, so a workspace can hold several
-   * Jenkins controllers by name rather than one url on the plugin's page.
+   * Jenkins controllers by name and a call can say which one it asks.
    */
   connectionTypes() {
     return [
@@ -545,18 +549,6 @@ export default class Jenkins extends OrknuxPlugin {
           'A Jenkins controller: Basic auth with user:apiToken as the secret, or no auth for one read anonymously.',
         urlPlaceholder: 'https://jenkins.example.com',
       },
-    ];
-  }
-
-  parameters() {
-    return [
-      new OrknuxParameter({
-        name: 'jenkins',
-        description: 'Which Jenkins to ask: a Jenkins connection, which carries its address and auth.',
-        type: 'connection',
-        connectionType: 'jenkins',
-        required: true,
-      }),
     ];
   }
 
@@ -768,9 +760,14 @@ export default class Jenkins extends OrknuxPlugin {
 Four calls, and the order matters. Three of them are cheap; the console log is
 not.
 
+Every call takes \`jenkins\`, the id of the Jenkins connection to ask - \`12\`
+in the examples below stands for whichever one the build is on. Use the same
+one for every call about one build: a job of the same name on another
+controller is another job.
+
 ## 0. If you do not know the job's exact name, search for it
 
-\`jenkins_search("deploy prod")\` finds a job by name wherever it lives,
+\`jenkins_search {"jenkins": 12, "query": "deploy prod"}\` finds a job by name wherever it lives,
 folders included — every word has to appear somewhere in the full name or the
 description, in any order. Guessing at a path and getting a 404 twice costs
 more than one search, and "there is no such job" is a bad answer to give
@@ -778,7 +775,7 @@ somebody whose job is called something slightly different.
 
 ## 1. The build, not the log
 
-\`jenkins_build(job)\` answers the last build by default: its \`result\`, whether
+\`jenkins_build {"jenkins": 12, "job": "platform/deploy"}\` answers the last build by default: its \`result\`, whether
 it is still \`building\`, what \`cause\` started it, and which \`changes\` went into
 it. Read this first. A build that is still running has \`result: null\`, and "it
 failed" about a build that has not finished is the most common wrong answer
@@ -789,7 +786,7 @@ build went red, and the messages usually say which one was the risk.
 
 ## 2. The tests, if there are any
 
-\`jenkins_testResults(job)\` answers the counts and the failing cases by name,
+\`jenkins_testResults {"jenkins": 12, "job": "platform/deploy"}\` answers the counts and the failing cases by name,
 with the assertion message each. **This is the answer** for most red builds,
 and it costs a fraction of the log — a hundred failing tests is a few
 kilobytes, where their console output is megabytes.
@@ -799,9 +796,9 @@ it means this job runs no tests, or it died before it got to them.
 
 ## 3. The end of the log
 
-\`jenkins_buildLog(job, which, lines)\` answers the **last** lines, because that
+\`jenkins_buildLog {"jenkins": 12, "job": "platform/deploy"}\` answers the **last** lines, because that
 is where a build says why it stopped. Start with the default. Ask for more only
-when the tail does not say — and if \`truncated\` is true there is more above, so
+when the tail does not say, with \`"lines"\` — and if \`truncated\` is true there is more above, so
 500 is a reasonable second move and 5000 almost never is.
 
 Compilation errors, missing credentials and out-of-space are all at the end. A
@@ -809,14 +806,14 @@ test failure is in the middle, which is what step 2 is for.
 
 ## 4. Compare against what worked
 
-\`jenkins_build(job, "lastSuccessfulBuild")\` beside the failing one says whether
+\`jenkins_build {"jenkins": 12, "job": "platform/deploy", "which": "lastSuccessfulBuild"}\` beside the failing one says whether
 the job has ever passed, when it last did, and what has gone in since. "It has
 never passed" and "it broke this morning" are different problems, and they look
 identical from a single red build.
 
 ## A slow build is a test question, not a log question
 
-\`jenkins_testCases(job, "lastBuild", "slowest")\` answers every test ordered by
+\`jenkins_testCases {"jenkins": 12, "job": "platform/deploy", "order": "slowest"}\` answers every test ordered by
 what it cost, with the whole run's time beside it — so "the build takes
 eighteen minutes" becomes "four tests take eleven of them", which is something
 somebody can act on. Reading the log for this does not work: a log says when
@@ -846,12 +843,14 @@ eleven builds have been red and nobody looked.
         description: 'What triggering actually does, and why a queue item is not a build yet.',
         content: `# Running a Jenkins job
 
-\`jenkins_trigger(job, parameters)\` asks Jenkins to build something. Two things
-about it are worth knowing before the first call.
+\`jenkins_trigger {"jenkins": 12, "job": "platform/deploy", "parameters": {"BRANCH": "main"}}\`
+asks Jenkins to build something - \`jenkins\` being the id of the Jenkins
+connection the job is on. Two things about it are worth knowing before the
+first call.
 
 ## Look before you trigger
 
-\`jenkins_job(job)\` answers \`building\`, \`inQueue\`, \`buildable\` and the
+\`jenkins_job {"jenkins": 12, "job": "platform/deploy"}\` answers \`building\`, \`inQueue\`, \`buildable\` and the
 \`parameters\` the job takes. Read it first, every time:
 
 - **\`building\` or \`inQueue\` means it is already going.** Triggering again
@@ -869,7 +868,7 @@ about it are worth knowing before the first call.
 the build has not started. It has been put in a queue, behind whatever else is
 in it, waiting for an executor with the right label to be free.
 
-\`jenkins_queueItem(id)\` says where it got to. While \`waiting\` is true, \`why\`
+\`jenkins_queueItem {"jenkins": 12, "item": "4711"}\` - the same connection the trigger went to - says where it got to. While \`waiting\` is true, \`why\`
 says what it is waiting for in Jenkins' own words — "Waiting for next available
 executor", "Build #41 is already in progress". Once it starts, \`build\` carries
 the number that every other call here takes.
@@ -921,14 +920,15 @@ builds for the one that was yours.`,
           'inside it, or use search, which looks through folders in one call. limit caps the ' +
           'list, and more says whether there were others.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'folder', type: 'string', required: false, default: '' },
           { name: 'limit', type: 'number', required: false, default: 50 },
         ],
         returnType: 'Jobs',
-        run: (folder, limit) => {
+        run: (jenkins, folder, limit) => {
           const inside = typeof folder === 'string' && folder.trim().length > 0 ? reference(folder) : null;
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 200);
-          const site = root(this.settings);
+          const site = root(jenkins);
 
           /*
            * One more than will be shown, so that `more` is answered rather
@@ -937,7 +937,7 @@ builds for the one that was yours.`,
            * as "that is all of them".
            */
           const listed = read(
-            this.settings,
+            jenkins,
             `${inside === null ? '' : inside.path}/api/json?tree=${nested(1)}{0,${capped + 1}}`,
             inside === null ? undefined : `there is no folder called ${inside.name}`,
           );
@@ -962,12 +962,13 @@ builds for the one that was yours.`,
           'three levels of folders deep from wherever it starts; pass folder to start further in, ' +
           'which is also what to do on a controller too large to read in one go.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'query', type: 'string' },
           { name: 'limit', type: 'number', required: false, default: 25 },
           { name: 'folder', type: 'string', required: false, default: '' },
         ],
         returnType: 'Jobs',
-        run: (query, limit, folder) => {
+        run: (jenkins, query, limit, folder) => {
           /*
            * Every word, anywhere, in any order — rather than the one substring
            * somebody happened to type. A person looking for the production
@@ -985,7 +986,7 @@ builds for the one that was yours.`,
 
           const inside = typeof folder === 'string' && folder.trim().length > 0 ? reference(folder) : null;
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 200);
-          const site = root(this.settings);
+          const site = root(jenkins);
 
           /*
            * One request, nested rather than walked.
@@ -998,7 +999,7 @@ builds for the one that was yours.`,
            * matching happens here because Jenkins offers nowhere to send it.
            */
           const listed = read(
-            this.settings,
+            jenkins,
             `${inside === null ? '' : inside.path}/api/json?tree=${nested(DEPTH)}`,
             inside === null ? undefined : `there is no folder called ${inside.name}`,
           );
@@ -1026,19 +1027,22 @@ builds for the one that was yours.`,
           'name ("deploy"), a path through folders ("platform/services/deploy") or any url that ' +
           'names it. Read this before triggering anything: it says whether a build is already ' +
           'running, and what the parameters are actually called.',
-        params: [{ name: 'job', type: 'string' }],
+        params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
+          { name: 'job', type: 'string' },
+        ],
         returnType: 'Job',
-        run: (job) => {
+        run: (jenkins, job) => {
           const ref = reference(job);
           const opened = read(
-            this.settings,
+            jenkins,
             `${ref.path}/api/json?tree=name,fullName,url,description,buildable,color,inQueue,` +
               'healthReport[score,description],lastBuild[number,result,timestamp],' +
               'lastSuccessfulBuild[number],lastFailedBuild[number],' +
               'property[parameterDefinitions[name,type,description,defaultParameterValue[value]]]',
             `there is no job called ${ref.name}`,
           );
-          return jobOf(opened, root(this.settings));
+          return jobOf(opened, root(jenkins));
         },
       }),
 
@@ -1053,22 +1057,23 @@ builds for the one that was yours.`,
           'lastBuild if not given. A url that names a build answers that build, whatever which ' +
           'says. Read this before any log: a build that has not finished has not failed.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'job', type: 'string' },
           { name: 'which', type: 'string', required: false, default: 'lastBuild' },
         ],
         returnType: 'Build',
-        run: (job, which) => {
+        run: (jenkins, job, which) => {
           const ref = reference(job);
           const wanted = ref.build === null ? buildOf(which) : ref.build;
           const opened = read(
-            this.settings,
+            jenkins,
             `${ref.path}/${wanted}/api/json?tree=number,result,building,timestamp,duration,` +
               'estimatedDuration,actions[causes[shortDescription]],' +
               'changeSet[items[commitId,msg,author[fullName]]],' +
               'changeSets[items[commitId,msg,author[fullName]]]',
             `${ref.name} has no build ${wanted}`,
           );
-          return builtOf(opened, ref.name, root(this.settings), ref.path);
+          return builtOf(opened, ref.name, root(jenkins), ref.path);
         },
       }),
 
@@ -1083,16 +1088,17 @@ builds for the one that was yours.`,
           'fetched, so asking for thousands of lines of a large log is slow and rarely the answer: ' +
           'try the test results first.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'job', type: 'string' },
           { name: 'which', type: 'string', required: false, default: 'lastBuild' },
           { name: 'lines', type: 'number', required: false, default: 200 },
         ],
         returnType: 'Log',
-        run: (job, which, lines) => {
+        run: (jenkins, job, which, lines) => {
           const ref = reference(job);
           const wanted = ref.build === null ? buildOf(which) : ref.build;
           const capped = Math.min(Math.max(Math.trunc(lines), 1), 5000);
-          const site = root(this.settings);
+          const site = root(jenkins);
           const where = `${ref.path}/${wanted}`;
 
           /*
@@ -1102,7 +1108,7 @@ builds for the one that was yours.`,
            * still being written, which changes what its last line means.
            */
           const about = read(
-            this.settings,
+            jenkins,
             `${where}/api/json?tree=number,result,building`,
             `${ref.name} has no build ${wanted}`,
           );
@@ -1121,15 +1127,15 @@ builds for the one that was yours.`,
           const probe = orknux.http.request({
             url: `${site}${where}/logText/progressiveText?start=0`,
             method: 'HEAD',
-            headers: headers(this.settings),
+            headers: headers(jenkins),
           });
           const length =
             probe.error === undefined && probe.status < 400 ? Number(header(probe, 'x-text-size')) : NaN;
 
           const cut = Number.isFinite(length) && length > window;
           const text = cut
-            ? call(this.settings, { path: `${where}/logText/progressiveText?start=${length - window}` }).body
-            : call(this.settings, { path: `${where}/consoleText` }).body;
+            ? call(jenkins, { path: `${where}/logText/progressiveText?start=${length - window}` }).body
+            : call(jenkins, { path: `${where}/consoleText` }).body;
 
           const all = (typeof text === 'string' ? text : '').split('\n');
           /* The byte window landed mid-line, and half a line is not a line. */
@@ -1160,16 +1166,17 @@ builds for the one that was yours.`,
           'a build number or a permalink and is lastBuild if not given; limit caps the failures ' +
           'listed. A build that published no test report says so rather than answering nothing.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'job', type: 'string' },
           { name: 'which', type: 'string', required: false, default: 'lastBuild' },
           { name: 'limit', type: 'number', required: false, default: 20 },
         ],
         returnType: 'Tests',
-        run: (job, which, limit) => {
+        run: (jenkins, job, which, limit) => {
           const ref = reference(job);
           const wanted = ref.build === null ? buildOf(which) : ref.build;
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 200);
-          const site = root(this.settings);
+          const site = root(jenkins);
           const where = `${ref.path}/${wanted}`;
 
           /*
@@ -1179,7 +1186,7 @@ builds for the one that was yours.`,
            * which test and why.
            */
           const report = read(
-            this.settings,
+            jenkins,
             `${where}/testReport/api/json?tree=failCount,skipCount,passCount,totalCount,` +
               'suites[cases[className,name,status,errorDetails]]',
             `${ref.name} build ${wanted} published no test results - either it runs no tests, ` +
@@ -1238,13 +1245,14 @@ builds for the one that was yours.`,
           'if not given; limit caps the cases. The answer also carries the whole run\'s time, so ' +
           'one case\'s share of it is a division rather than a guess.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'job', type: 'string' },
           { name: 'which', type: 'string', required: false, default: 'lastBuild' },
           { name: 'order', type: 'string', required: false, default: 'slowest' },
           { name: 'limit', type: 'number', required: false, default: 20 },
         ],
         returnType: 'Cases',
-        run: (job, which, order, limit) => {
+        run: (jenkins, job, which, order, limit) => {
           const ref = reference(job);
           const wanted = ref.build === null ? buildOf(which) : ref.build;
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 500);
@@ -1252,11 +1260,11 @@ builds for the one that was yours.`,
           if (ORDERS[asked] === undefined) {
             throw new Error(`no order called ${order}: it is ${Object.keys(ORDERS).join(', ')}`);
           }
-          const site = root(this.settings);
+          const site = root(jenkins);
           const where = `${ref.path}/${wanted}`;
 
           const report = read(
-            this.settings,
+            jenkins,
             `${where}/testReport/api/json?tree=duration,failCount,skipCount,passCount,totalCount,` +
               'suites[name,duration,cases[className,name,status,duration,age,skipped,errorDetails]]',
             `${ref.name} build ${wanted} published no test results - either it runs no tests, ` +
@@ -1293,11 +1301,12 @@ builds for the one that was yours.`,
           'when it has and what number it got. Read the job first - triggering one that is already ' +
           'building queues a second build of the same thing.',
         params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'job', type: 'string' },
           { name: 'parameters', type: 'map', required: false, default: {} },
         ],
         returnType: 'Queued',
-        run: (job, parameters) => {
+        run: (jenkins, job, parameters) => {
           const ref = reference(job);
           const given = parameters !== null && typeof parameters === 'object' ? parameters : {};
           const passed = Object.keys(given)
@@ -1312,10 +1321,10 @@ builds for the one that was yours.`,
           const where =
             passed.length === 0 ? `${ref.path}/build` : `${ref.path}/buildWithParameters?${passed.join('&')}`;
 
-          const asked = call(this.settings, {
+          const asked = call(jenkins, {
             method: 'POST',
             path: where,
-            headers: crumb(this.settings),
+            headers: crumb(jenkins),
             notFound: `there is no job called ${ref.name}, or it takes no parameters to build with`,
           });
 
@@ -1349,9 +1358,12 @@ builds for the one that was yours.`,
           'carries the number every other call here takes. Jenkins forgets a queue item about five ' +
           "minutes after the build starts, and says so: past that, the job's lastBuild is where to " +
           'look.',
-        params: [{ name: 'item', type: 'string' }],
+        params: [
+          { name: 'jenkins', type: 'connection', description: JENKINS },
+          { name: 'item', type: 'string' },
+        ],
         returnType: 'Queued',
-        run: (item) => {
+        run: (jenkins, item) => {
           const asked =
             typeof item === 'string' ? item.trim() : String(item === null || item === undefined ? '' : item);
           const found = asked.match(/^(?:.*\/queue\/item\/)?(\d+)\/?$/);
@@ -1361,7 +1373,7 @@ builds for the one that was yours.`,
           const id = found[1];
 
           const held = read(
-            this.settings,
+            jenkins,
             `/queue/item/${id}/api/json?tree=id,why,blocked,buildable,stuck,cancelled,` +
               'task[name,fullName],executable[number]',
             `queue item ${id} is not in the queue any more - Jenkins forgets one about five ` +
@@ -1381,7 +1393,7 @@ builds for the one that was yours.`,
             url:
               number === null || typeof named !== 'string'
                 ? null
-                : `${root(this.settings)}${pathOf(named.split('/'))}/${number}/`,
+                : `${root(jenkins)}${pathOf(named.split('/'))}/${number}/`,
           };
         },
       }),

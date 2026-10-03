@@ -2509,15 +2509,23 @@ test('the jenkins plugin declares what the server would accept', async () => {
   assert.equal(inspected.id, 'jenkins');
   assert.deepEqual(validate(inspected), []);
 
-  /* One connection of its own kind, carrying the address and auth three settings used to. */
+  /*
+   * A connection kind of its own, and no setting naming one: every call takes
+   * the controller it asks as its first argument, so a workspace can drive
+   * several.
+   */
   assert.deepEqual(
     inspected.connectionTypes.map((kind) => kind.name),
     ['jenkins'],
   );
-  assert.deepEqual(
-    inspected.parameters.map((parameter) => [parameter.name, parameter.type, parameter.connectionType]),
-    [['jenkins', 'connection', 'jenkins']],
-  );
+  assert.deepEqual(inspected.parameters, []);
+  for (const declared of inspected.functions) {
+    assert.deepEqual(
+      [declared.params[0].name, declared.params[0].type],
+      ['jenkins', 'connection'],
+      `${declared.name} takes the controller first`,
+    );
+  }
 
   /* None: the credential arrives already spelled as a header. */
   assert.deepEqual(inspected.permissions, []);
@@ -2544,25 +2552,22 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   const url = new URL(`../../plugins/jenkins/jenkins.js`, import.meta.url);
   const { default: Jenkins } = await import(url.href);
 
-  const configured = (settings) => {
-    const plugin = Object.create(Jenkins.prototype);
-    Object.defineProperty(plugin, 'settings', { value: Object.freeze(settings) });
-    const functions = plugin.functions();
-    return (name) => functions.find((one) => one.name === name);
-  };
+  const functions = Object.create(Jenkins.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
 
-  /* Refused before a setting is read, let alone before a request goes out. */
-  assert.throws(() => configured({})('job').run('   '), /no job named/);
-  assert.throws(() => configured({})('job').run('https://ci.example.com'), /not a job name or a job url/);
-  assert.throws(() => configured({})('build').run('deploy', 'yesterday'), /not a build number or a permalink/);
-  assert.throws(() => configured({})('queueItem').run('soon'), /not a queue item id or a queue url/);
+  /* Refused before the connection is read, let alone before a request goes out. */
+  assert.throws(() => call('job').run(null, '   '), /no job named/);
+  assert.throws(() => call('job').run(null, 'https://ci.example.com'), /not a job name or a job url/);
+  assert.throws(() => call('build').run(null, 'deploy', 'yesterday'), /not a build number or a permalink/);
+  assert.throws(() => call('queueItem').run(null, 'soon'), /not a queue item id or a queue url/);
 
-  /* Then the connection: absent, or a bare handle that never carried an address. */
-  assert.throws(() => configured({})('job').run('deploy'), /jenkins parameter is not set/);
-  assert.throws(
-    () => configured({ jenkins: { id: 1, type: 'HTTP' } })('job').run('deploy'),
-    /not a Jenkins connection of this plugin's kind/,
-  );
+  /*
+   * Then the connection: absent, a bare handle that never carried an address,
+   * or the id a model wrote, on a server that did not resolve it.
+   */
+  assert.throws(() => call('job').run(null, 'deploy'), /no Jenkins connection was given/);
+  assert.throws(() => call('job').run({ id: 1, type: 'HTTP' }, 'deploy'), /not a Jenkins connection of this plugin's kind/);
+  assert.throws(() => call('job').run(12, 'deploy'), /not a Jenkins connection of this plugin's kind/);
 
   /*
    * Everything below is watched on its way out rather than inferred. What
@@ -2669,31 +2674,30 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
     };
 
     const site = {
-      jenkins: {
-        id: 1,
-        type: 'HTTP',
-        pluginType: 'jenkins/jenkins',
-        url: 'https://ci.example.com/',
-        authType: 'BASIC',
-        headers: { Authorization: 'Basic ' + Buffer.from('ada:t').toString('base64') },
-      },
+      id: 1,
+      type: 'HTTP',
+      pluginType: 'jenkins/jenkins',
+      url: 'https://ci.example.com/',
+      authType: 'BASIC',
+      headers: { Authorization: 'Basic ' + Buffer.from('ada:t').toString('base64') },
     };
     /* A pasted link to a build, asked about as a job: the build is not the job. */
-    opened = configured(site)('job').run('https://ci.example.com/job/platform/job/deploy/412/');
-    listed = configured(site)('jobs').run('', 2);
+    opened = call('job').run(site, 'https://ci.example.com/job/platform/job/deploy/412/');
+    listed = call('jobs').run(site, '', 2);
     /* The same build, by its link, with `which` left at its default. */
-    built = configured(site)('build').run('https://ci.example.com/job/platform/job/deploy/412/', 'lastBuild');
-    log = configured(site)('buildLog').run('deploy', 'lastBuild', 200);
-    started = configured(site)('trigger').run('platform/deploy', { BRANCH: 'feature/x' });
-    queued = configured(site)('queueItem').run('https://ci.example.com/queue/item/77/');
+    built = call('build').run(site, 'https://ci.example.com/job/platform/job/deploy/412/', 'lastBuild');
+    log = call('buildLog').run(site, 'deploy', 'lastBuild', 200);
+    started = call('trigger').run(site, 'platform/deploy', { BRANCH: 'feature/x' });
+    queued = call('queueItem').run(site, 'https://ci.example.com/queue/item/77/');
 
-    /* An instance read anonymously sends no credential at all. */
-    configured({
-      jenkins: { id: 2, type: 'HTTP', pluginType: 'jenkins/jenkins', url: 'https://ci.example.com', authType: 'NONE', headers: {} },
-    })('job').run('deploy');
+    /* A second controller, read anonymously: its own host, and no credential at all. */
+    call('job').run(
+      { id: 2, type: 'HTTP', pluginType: 'jenkins/jenkins', url: 'https://releases.example.com', authType: 'NONE', headers: {} },
+      'deploy',
+    );
 
     assert.throws(
-      () => configured(site)('queueItem').run('99'),
+      () => call('queueItem').run(site, '99'),
       /queue item 99 is not in the queue any more/,
     );
   } finally {
@@ -2768,7 +2772,8 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   assert.equal(queued.build, 413);
   assert.equal(queued.url, 'https://ci.example.com/job/platform/job/deploy/413/');
 
-  /* Anonymous: no authorization header at all, rather than an empty one. */
+  /* The other controller: asked at its own address, with no authorization header rather than an empty one. */
+  assert.match(asked[9].url, /^https:\/\/releases\.example\.com\/job\/deploy\/api\/json/);
   assert.equal(asked[9].headers.Authorization, undefined);
   assert.equal(asked[9].headers.authorization, undefined);
 });
@@ -2777,20 +2782,16 @@ test('jenkins searches the job tree, and reads a test report a case at a time', 
   const url = new URL(`../../plugins/jenkins/jenkins.js`, import.meta.url);
   const { default: Jenkins } = await import(url.href);
 
-  const plugin = Object.create(Jenkins.prototype);
-  Object.defineProperty(plugin, 'settings', {
-    value: Object.freeze({
-      jenkins: {
-        id: 1,
-        type: 'HTTP',
-        pluginType: 'jenkins/jenkins',
-        url: 'https://ci.example.com',
-        authType: 'BASIC',
-        headers: { Authorization: 'Basic ' + Buffer.from('ada:t').toString('base64') },
-      },
-    }),
-  });
-  const call = (name) => plugin.functions().find((one) => one.name === name);
+  const site = {
+    id: 1,
+    type: 'HTTP',
+    pluginType: 'jenkins/jenkins',
+    url: 'https://ci.example.com',
+    authType: 'BASIC',
+    headers: { Authorization: 'Basic ' + Buffer.from('ada:t').toString('base64') },
+  };
+  const functions = Object.create(Jenkins.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
 
   /* A controller with folders in it, answered the way a nested tree answers. */
   const tree = {
@@ -2863,11 +2864,11 @@ test('jenkins searches the job tree, and reads a test report a case at a time', 
       const sent = what.url.includes('/testReport/') ? report : tree;
       return { status: 200, headers: {}, body: JSON.stringify(sent), json: sent };
     };
-    found = call('search').run('deploy prod', 25, '');
-    narrow = call('search').run('deploy', 1, '');
-    slowest = call('testCases').run('platform/prod/deploy-api', 'lastBuild', 'slowest', 20);
-    flaky = call('testCases').run('platform/prod/deploy-api', 'lastBuild', 'flaky', 20);
-    failed = call('testCases').run('platform/prod/deploy-api', 'lastBuild', 'failed', 20);
+    found = call('search').run(site, 'deploy prod', 25, '');
+    narrow = call('search').run(site, 'deploy', 1, '');
+    slowest = call('testCases').run(site, 'platform/prod/deploy-api', 'lastBuild', 'slowest', 20);
+    flaky = call('testCases').run(site, 'platform/prod/deploy-api', 'lastBuild', 'flaky', 20);
+    failed = call('testCases').run(site, 'platform/prod/deploy-api', 'lastBuild', 'failed', 20);
   } finally {
     globalThis.orknux.http.request = door;
   }
@@ -2897,9 +2898,9 @@ test('jenkins searches the job tree, and reads a test report a case at a time', 
   assert.equal(narrow.jobs.length, 1);
   assert.equal(narrow.more, true);
 
-  assert.throws(() => call('search').run('   ', 25, ''), /nothing to search for/);
+  assert.throws(() => call('search').run(site, '   ', 25, ''), /nothing to search for/);
   assert.throws(
-    () => call('testCases').run('deploy', 'lastBuild', 'sideways', 20),
+    () => call('testCases').run(site, 'deploy', 'lastBuild', 'sideways', 20),
     /no order called sideways: it is slowest, failed, flaky, name/,
   );
 
@@ -2941,15 +2942,22 @@ test('the prometheus plugin declares what the server would accept', async () => 
   assert.equal(inspected.id, 'prometheus');
   assert.deepEqual(validate(inspected), []);
 
-  /* One connection of its own kind, carrying the address and auth three settings used to. */
+  /*
+   * A connection kind of its own, and no setting naming one: every call takes
+   * the server it asks as its first argument, so a workspace can query several.
+   */
   assert.deepEqual(
     inspected.connectionTypes.map((kind) => kind.name),
     ['prometheus'],
   );
-  assert.deepEqual(
-    inspected.parameters.map((parameter) => [parameter.name, parameter.type, parameter.connectionType]),
-    [['prometheus', 'connection', 'prometheus']],
-  );
+  assert.deepEqual(inspected.parameters, []);
+  for (const declared of inspected.functions) {
+    assert.deepEqual(
+      [declared.params[0].name, declared.params[0].type],
+      ['prometheus', 'connection'],
+      `${declared.name} takes the server first`,
+    );
+  }
   /* None: the credential arrives already spelled as a header. */
   assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
@@ -2961,6 +2969,52 @@ test('the prometheus plugin declares what the server would accept', async () => 
     inspected.tools.map((declared) => declared.name),
     ['listMetrics', 'query'],
   );
+});
+
+test('prometheus asks whichever server the call names', async () => {
+  const url = new URL(`../../plugins/prometheus/prometheus.js`, import.meta.url);
+  const { default: Prometheus } = await import(url.href);
+  const functions = Object.create(Prometheus.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
+
+  const server = (id, where, headers) => ({
+    id,
+    type: 'HTTP',
+    pluginType: 'prometheus/prometheus',
+    url: where,
+    authType: headers.Authorization === undefined ? 'NONE' : 'BEARER_TOKEN',
+    headers,
+  });
+  const production = server(1, 'https://prometheus.prod.example.com/', { Authorization: 'Bearer p' });
+  const staging = server(2, 'http://prometheus.staging:9090', {});
+
+  assert.throws(() => call('query').run(production, '  ', ''), /no expression to execute/);
+  assert.throws(() => call('query').run(null, 'up', ''), /no Prometheus connection was given/);
+  assert.throws(() => call('query').run(7, 'up', ''), /not a Prometheus connection of this plugin's kind/);
+
+  const asked = [];
+  const front = globalThis.orknux.http.get;
+  let metrics;
+  try {
+    globalThis.orknux.http.get = (where, headers) => {
+      asked.push({ url: where, headers });
+      const json = where.includes('__name__')
+        ? { status: 'success', data: ['up', 'http_requests_total'] }
+        : { status: 'success', data: { resultType: 'vector', result: [] } };
+      return { status: 200, headers: {}, body: JSON.stringify(json), json };
+    };
+    call('query').run(production, 'up', '');
+    metrics = call('listMetrics').run(staging, '', 1);
+  } finally {
+    globalThis.orknux.http.get = front;
+  }
+
+  /* Two servers, two addresses, and each one's own credential or none. */
+  assert.match(asked[0].url, /^https:\/\/prometheus\.prod\.example\.com\/api\/v1\/query\?query=up$/);
+  assert.equal(asked[0].headers.Authorization, 'Bearer p');
+  assert.match(asked[1].url, /^http:\/\/prometheus\.staging:9090\/api\/v1\/label\/__name__\/values$/);
+  assert.equal(asked[1].headers.Authorization, undefined);
+  assert.deepEqual(metrics, { metrics: ['up'], count: 2 });
 });
 
 test('a slack upload without a bot token is a thrown sentence, not a request', async () => {
