@@ -1,5 +1,6 @@
 import {
   ACTION_VALUE_TYPES,
+  ARGUMENT_TYPES,
   CAPABILITIES,
   CONNECTION,
   CONNECTION_TYPES,
@@ -245,6 +246,10 @@ function fitsType(type: string, value: unknown): boolean {
       return Array.isArray(value);
     case 'map':
       return typeof value === 'object' && !Array.isArray(value);
+    case 'connection':
+      // Names a row of one workspace, and a plugin belongs to every workspace
+      // at once - so there is no row a default could name.
+      return false;
     default:
       // A shape the plugin exports, or a type this server does not have; the
       // type itself is refused elsewhere, and guessing here would say so twice.
@@ -788,7 +793,7 @@ export function validateFunctions(
          * either way, and the types in this package cannot express it anyway.
          */
         refuse(`${name}'s ${param.name} is a "none", and a parameter has to carry something`);
-      } else if (!isValueType(param.type)) {
+      } else if (!isArgumentType(param.type)) {
         refuse(`${name}'s ${param.name} is a "${param.type}", which is not a type this server has`);
       }
     }
@@ -900,7 +905,7 @@ export function validateTools(
             "definitions. A plugin's tools belong to every workspace at once, so there is " +
             'no workspace whose objects they could name. Use map instead.',
         );
-      } else if (!isValueType(param.type)) {
+      } else if (!isArgumentType(param.type)) {
         refuse(
           `the tool ${name}'s ${param.name} is a "${param.type}", which is not a type this server has`,
         );
@@ -1113,6 +1118,11 @@ function isReserved(type: string): boolean {
 function isValueType(type: string): boolean {
   const written = type.trim().toLowerCase();
   return (VALUE_TYPES as readonly string[]).includes(written);
+}
+
+function isArgumentType(type: string): boolean {
+  const written = type.trim().toLowerCase();
+  return (ARGUMENT_TYPES as readonly string[]).includes(written);
 }
 
 function isParameterType(type: string): boolean {

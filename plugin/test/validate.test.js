@@ -193,6 +193,30 @@ test("a tool's parameters are held to the functions' rules, in the tool's name",
   );
 });
 
+test('a function and a tool may each take a connection, which is how one plugin reaches several hosts', () => {
+  const takes = [{ name: 'prometheus', type: 'connection' }, { name: 'promql', type: 'string' }];
+  assert.deepEqual(validateFunctions([{ name: 'query', params: takes, returnType: 'map' }]), []);
+  assert.deepEqual(validateTools([{ name: 'query', params: takes, returnType: 'map' }]), []);
+});
+
+test('a connection argument has no default, because a default would name one workspace’s row', () => {
+  const problems = validateFunctions([
+    { name: 'query', params: [{ name: 'prometheus', type: 'connection', default: 7 }], returnType: 'map' },
+  ]);
+  assert.deepEqual(
+    problems.map((problem) => problem.message),
+    ["query's prometheus is a connection and its default is not one"],
+  );
+});
+
+test('a function may not return a connection, stricter than the server', () => {
+  const problems = validateFunctions([{ name: 'pick', params: [], returnType: 'connection' }]);
+  assert.deepEqual(
+    problems.map((problem) => problem.message),
+    ['pick returns "connection", which is not a type this server has'],
+  );
+});
+
 test('a plugin declaring the rest of the contract has nothing wrong with it either', () => {
   const problems = validate({
     ...teammates,

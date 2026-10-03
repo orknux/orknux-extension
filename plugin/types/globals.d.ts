@@ -28,6 +28,12 @@
 /** The shape of a value crossing between a workflow and a plugin. */
 type OrknuxValueType = 'string' | 'number' | 'boolean' | 'map' | 'array';
 
+/**
+ * What a function's or a tool's argument may be. A connection arrives in `run`
+ * as the same handle a connection setting does.
+ */
+type OrknuxArgumentType = OrknuxValueType | 'connection';
+
 /** What a plugin may ask for. Exactly this list, and nothing else. */
 type OrknuxPermission = 'CONSOLE' | 'INTL' | 'TEXT_ENCODING' | 'PERFORMANCE' | 'TEMPORAL';
 
@@ -716,7 +722,7 @@ interface OrknuxParamDeclared {
   /** An identifier: letters, digits and underscores. */
   name: string;
   /** What arrives in it. */
-  type: OrknuxValueType;
+  type: OrknuxArgumentType;
   /**
    * What this argument is, for whoever — or whatever — reads it.
    *

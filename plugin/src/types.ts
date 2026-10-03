@@ -1,5 +1,6 @@
 import type {
   ACTION_VALUE_TYPES,
+  ARGUMENT_TYPES,
   CAPABILITIES,
   CONNECTION,
   CONNECTION_TYPES,
@@ -15,6 +16,15 @@ import type {
  * two cannot disagree about what a plugin may declare.
  */
 export type OrknuxValueType = (typeof VALUE_TYPES)[number];
+
+/**
+ * What a function's or a tool's argument may be: a value, or a connection.
+ *
+ * A connection argument arrives in `run` as an [OrknuxConnectionHandle] - the
+ * one way a plugin reaches several hosts of a kind rather than the one its
+ * settings name.
+ */
+export type OrknuxArgumentType = (typeof ARGUMENT_TYPES)[number];
 
 /** A permission a plugin may ask for. The server's own list; nothing else exists. */
 export type OrknuxPermission = (typeof PERMISSIONS)[number];
@@ -137,10 +147,15 @@ export interface OrknuxValues {
   array: unknown[];
 }
 
+/** What each argument type is in TypeScript: the values, and a connection's handle. */
+export interface OrknuxArgumentValues extends OrknuxValues {
+  connection: OrknuxConnectionHandle;
+}
+
 /** One of a function's parameters, as it is declared. */
 export interface OrknuxParam<
   Name extends string = string,
-  Type extends OrknuxValueType = OrknuxValueType,
+  Type extends OrknuxArgumentType = OrknuxArgumentType,
 > {
   readonly name: Name;
   readonly type: Type;
@@ -185,7 +200,7 @@ export interface OrknuxParam<
  * renaming a type in the declaration is a compile error in the body.
  */
 export type OrknuxArgs<Params extends readonly OrknuxParam[]> = {
-  -readonly [Index in keyof Params]: OrknuxValues[Params[Index]['type']];
+  -readonly [Index in keyof Params]: OrknuxArgumentValues[Params[Index]['type']];
 };
 
 /** A function, as it is written. */

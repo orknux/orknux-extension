@@ -6,7 +6,7 @@ import process from 'node:process';
 import { bundle } from './build.js';
 import { inspect, NotAPluginError } from './inspect.js';
 import type { Inspection } from './inspect.js';
-import { API_VERSION, MAX_SOURCE_BYTES, VALUE_TYPES } from './limits.js';
+import { API_VERSION, ARGUMENT_TYPES, MAX_SOURCE_BYTES } from './limits.js';
 import { qualifiedName, validate } from './validate.js';
 import type { DeclaredParam, Problem } from './validate.js';
 
@@ -441,7 +441,7 @@ function paramText(param: DeclaredParam): string {
 
 function typeName(written: string): string {
   const lowered = written.trim().toLowerCase();
-  return (VALUE_TYPES as readonly string[]).includes(lowered) ? lowered : written.trim();
+  return (ARGUMENT_TYPES as readonly string[]).includes(lowered) ? lowered : written.trim();
 }
 
 function size(bytes: number): string {

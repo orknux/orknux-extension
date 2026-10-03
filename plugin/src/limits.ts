@@ -244,6 +244,24 @@ export const PARAMETER_TYPES = ['string', 'number', 'boolean'] as const;
 export const CONNECTION = 'connection';
 
 /**
+ * What a function's or a tool's argument may be: every value type, and a
+ * connection. `ValueType.CONNECTION` in orknux-server.
+ *
+ * A connection argument is how one plugin reaches several hosts of a kind - two
+ * Prometheus servers, three Jenkins controllers - where a connection *setting*
+ * is one per workspace. A function is handed the same handle a setting is,
+ * address and credential included for a host of the plugin's own kind; a
+ * model calling a tool fronting it writes the connection's id, and the server
+ * resolves it before `run` sees it.
+ *
+ * Not a return type, though the server would store one: a connection names a
+ * row, and nothing downstream of a function could do anything with a handle
+ * but pass it back. Stricter here, which can only refuse what no plugin should
+ * be doing.
+ */
+export const ARGUMENT_TYPES = [...VALUE_TYPES, CONNECTION] as const;
+
+/**
  * The kinds of connection a workspace can hold, and so the kinds a `connection`
  * parameter may name. `ConnectionType` in orknux-server.
  */

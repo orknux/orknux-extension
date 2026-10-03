@@ -37,6 +37,7 @@ export type { OrknuxPluginSpec } from './define.js';
 
 export {
   ACTION_VALUE_TYPES,
+  ARGUMENT_TYPES,
   API_VERSION,
   CAPABILITIES,
   CONNECTION,
@@ -78,6 +79,8 @@ export type {
   OrknuxActionParameter,
   OrknuxActionValueType,
   OrknuxArgs,
+  OrknuxArgumentType,
+  OrknuxArgumentValues,
   OrknuxBinaryResponse,
   OrknuxConnectionAuthType,
   OrknuxConnectionTypeDeclaration,
