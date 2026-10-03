@@ -100,6 +100,18 @@ function read(prometheus, path) {
       `Prometheus answered ${answered.status}${typeof said === 'string' ? ': ' + said : ''} for ${path.split('?')[0]}`,
     );
   }
+  /*
+   * A 200 that is not Prometheus's envelope is something else answering at
+   * that address - a login page, a single-page app that serves itself for
+   * every path. Read as data it was an empty list, which looks exactly like a
+   * server with nothing in it; saying so points at the connection's url.
+   */
+  if (at(answered.json, 'status') !== 'success') {
+    throw new Error(
+      `${root(connection)} answered ${path.split('?')[0]} with something other than Prometheus's API - ` +
+        "check the connection's url is the Prometheus server's root",
+    );
+  }
   return at(answered.json, 'data');
 }
 
@@ -177,8 +189,9 @@ export default class Prometheus extends OrknuxPlugin {
         name: 'listMetrics',
         description:
           'Lists the metric names the server knows, alphabetically - the vocabulary a query is written ' +
-          'in. match narrows the list to the series a selector matches, like {job="api"}; leave it out ' +
-          'for everything. Answers the names and how many there were before limit capped them; leave ' +
+          'in. Leave match out to list every metric. To narrow the list pass a selector that names ' +
+          'something, like {job="api"}: Prometheus refuses one that would match everything, such as ' +
+          '{job=~".*"}. Answers the names and how many there were before limit capped them; leave ' +
           'limit out for no cap.',
         params: [
           {
@@ -201,7 +214,22 @@ export default class Prometheus extends OrknuxPlugin {
           if (selector.length > 0 && selector !== '{}') {
             path += `?match[]=${encodeURIComponent(selector)}`;
           }
-          const names = read(prometheus, path);
+          let names;
+          try {
+            names = read(prometheus, path);
+          } catch (refused) {
+            /*
+             * A selector written to mean "everything" - {job=~".*"}, {job!=""}
+             * - is one Prometheus will not take, and its own sentence does not
+             * say what to do instead. The answer is always the same one.
+             */
+            if (String(refused.message).includes('non-empty matcher')) {
+              throw new Error(
+                `Prometheus refuses ${selector} because it would match every series - leave match out to list every metric`,
+              );
+            }
+            throw refused;
+          }
           const metrics = Array.isArray(names) ? names : [];
           /* Zero is this one's real answer rather than a sentinel: no cap. */
           const capped = limit > 0 ? metrics.slice(0, limit) : metrics;

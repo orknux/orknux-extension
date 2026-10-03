@@ -3016,6 +3016,27 @@ test('prometheus asks whichever server the call names', async () => {
   assert.match(asked[1].url, /^http:\/\/prometheus\.staging:9090\/api\/v1\/label\/__name__\/values$/);
   assert.equal(asked[1].headers.Authorization, undefined);
   assert.deepEqual(metrics, { metrics: ['up'], count: 2 });
+
+  try {
+    /* A selector meant as "everything", refused in Prometheus's own words. */
+    globalThis.orknux.http.get = () => {
+      const json = { status: 'error', errorType: 'bad_data', error: 'match[] must contain at least one non-empty matcher' };
+      return { status: 400, headers: {}, body: JSON.stringify(json), json };
+    };
+    assert.throws(
+      () => call('listMetrics').run(staging, '{job=~".*"}', 0),
+      /Prometheus refuses \{job=~"\.\*"\} because it would match every series - leave match out/,
+    );
+
+    /* Something that is not Prometheus, answering 200: not an empty server. */
+    globalThis.orknux.http.get = () => ({ status: 200, headers: {}, body: '<!doctype html><title>Orknux</title>' });
+    assert.throws(
+      () => call('listMetrics').run(staging, '', 0),
+      /http:\/\/prometheus\.staging:9090 answered \/api\/v1\/label\/__name__\/values with something other than Prometheus's API/,
+    );
+  } finally {
+    globalThis.orknux.http.get = front;
+  }
 });
 
 test('a slack upload without a bot token is a thrown sentence, not a request', async () => {
