@@ -9,7 +9,7 @@
     "files"
   ],
   "summary": "Read threads, messages and users, post, react and search — and carry files both ways, text or binary.",
-  "version": "1.31.0",
+  "version": "1.31.1",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }

@@ -3518,6 +3518,174 @@ test('slack findRecent matches like a search: diacritics, word forms, phrases, O
 });
 
 /*
+ * The matching above was rewritten for what it cost rather than for what it
+ * answers (orknux-server #616): splitting every message into words and walking
+ * them with closures made 80 KB of garbage a message in the server's
+ * interpreter, and an agent paging through history turned that into hundreds
+ * of megabytes a second. It is a regular expression per phrase now, behind a
+ * substring check. This holds it to the answers the word-by-word version gave,
+ * over a few thousand messages made of the awkward cases - diacritics,
+ * hyphens, digits, punctuation, a stem inside a word rather than at its start.
+ */
+test('slack findRecent answers what matching word by word answered', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  /* The version this replaced, word for word. */
+  const folded = (text) =>
+    String(text ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/ł/g, 'l').replace(/đ/g, 'd').replace(/ø/g, 'o').replace(/ß/g, 'ss').replace(/æ/g, 'ae').replace(/œ/g, 'oe');
+  const wordsOf = (text) => folded(text).split(/[^\p{L}\p{N}]+/u).filter((one) => one.length > 0);
+  const stemOf = (word) => (word.length >= 7 ? word.slice(0, -2) : word.length >= 5 ? word.slice(0, -1) : word);
+  const parsed = (query) => {
+    const groups = [];
+    let current = { must: [], mustNot: [] };
+    const pattern = /(-?)"([^"]*)"|(\S+)/g;
+    let found;
+    while ((found = pattern.exec(query)) !== null) {
+      if (found[3] === 'OR') {
+        if (current.must.length > 0 || current.mustNot.length > 0) groups.push(current);
+        current = { must: [], mustNot: [] };
+        continue;
+      }
+      const negated = found[1] === '-' || (found[3] !== undefined && found[3].startsWith('-') && found[3].length > 1);
+      const raw = found[2] !== undefined ? found[2] : negated ? found[3].slice(1) : found[3];
+      const phrase = wordsOf(raw).map(stemOf);
+      if (phrase.length > 0) (negated ? current.mustNot : current.must).push(phrase);
+    }
+    if (current.must.length > 0 || current.mustNot.length > 0) groups.push(current);
+    return groups;
+  };
+  const holds = (words, phrase) => {
+    for (let start = 0; start + phrase.length <= words.length; start += 1) {
+      if (phrase.every((stem, at) => words[start + at].startsWith(stem))) return true;
+    }
+    return false;
+  };
+  const answers = (text, groups) => {
+    const words = wordsOf(text);
+    return groups.some(
+      (group) =>
+        group.must.length > 0 &&
+        group.must.every((phrase) => holds(words, phrase)) &&
+        !group.mustNot.some((phrase) => holds(words, phrase)),
+    );
+  };
+
+  /* A fixed sequence, so a failure is the same failure every run. */
+  let seed = 616;
+  const next = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const pick = (list) => list[Math.floor(next() * list.length)];
+  const vocabulary = [
+    'release', 'Release', 'RELEASED', 'releases', 'pre-release', 'prerelease', 'wysyłka', 'wysyłki', 'Flash-Wysyłki',
+    'flash', 'deploy', 'deployment', 'redeploy', 'v2.3', '2.3', 'prod', 'production', 'Straße', 'strasse', 'Œuvre',
+    'café', 'cafe', 'naïve', 'friday', 'fri', 'rollback', 'roll-back', '#release', '@release', 'release!', '(friday)',
+  ];
+  const separators = [' ', ' ', ' ', '\n', ', ', ' - ', '/', '...', '  '];
+  const messages = [];
+  for (let at = 0; at < 3000; at += 1) {
+    const length = 1 + Math.floor(next() * 12);
+    let text = '';
+    for (let word = 0; word < length; word += 1) {
+      text += (word === 0 ? '' : pick(separators)) + pick(vocabulary);
+    }
+    messages.push({ ts: `${1700000000 + (3000 - at)}.000100`, user: `U${at}`, text: text });
+  }
+  const history = { ok: true, has_more: false, messages: messages };
+
+  const queries = [
+    'release', 'releases', 'wysylka', 'flash wysylki', '"flash wysylki"', '"release friday"', 'release -friday',
+    'deploy OR rollback', 'strasse', 'cafe', 'naive', 'oeuvre', '2.3', 'v2', '"pre release"', 'prod -production',
+    '"roll back" OR "release friday"', 'release deploy -prod', '"friday release deploy"',
+  ];
+
+  const door = globalThis.orknux.http.request;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      const method = what.url.slice('https://slack.com/api/'.length);
+      if (method === 'users.conversations') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+      }
+      if (method === 'auth.test') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+      }
+      if (method === 'conversations.history') {
+        return { status: 200, headers: {}, body: '{}', json: history };
+      }
+      throw new Error(`the test was not expecting ${method}`);
+    };
+    for (const query of queries) {
+      const groups = parsed(query);
+      const expected = messages.filter((one) => answers(one.text, groups)).map((one) => one.user);
+      const found = call('findRecent').run(query, '#bos-team', 30, 200, false, 1, '', false);
+      assert.equal(found.total, expected.length, `${query}: ${found.total} matched where ${expected.length} did`);
+      assert.deepEqual(found.matches.map((one) => one.user), expected.slice(0, 200), query);
+      assert.ok(expected.length > 0, `${query} matched nothing, so it tested nothing`);
+    }
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+});
+
+/*
+ * pages multiplied across every channel the bot is in: a model asking for five
+ * with no channel read seventy-five pages in one call (orknux-server #616), and
+ * was then told fifteen times to carry on with a nextCursor that was null.
+ */
+test('slack findRecent reads one page of each channel when none is named, whatever pages says', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  const read = [];
+  const door = globalThis.orknux.http.request;
+  let found;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      const method = what.url.slice('https://slack.com/api/'.length);
+      if (method === 'users.conversations') {
+        const channels = [1, 2, 3].map((at) => ({ id: `C${at}`, name: `team-${at}` }));
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: channels } };
+      }
+      if (method === 'auth.test') {
+        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+      }
+      if (method === 'conversations.history') {
+        read.push(/channel=(\w+)/.exec(what.body)[1]);
+        const messages = [{ ts: `${1700000000 + read.length}.000100`, user: 'U1', text: 'release notes' }];
+        return {
+          status: 200,
+          headers: {},
+          body: '{}',
+          json: { ok: true, has_more: true, messages: messages, response_metadata: { next_cursor: 'more' } },
+        };
+      }
+      throw new Error(`the test was not expecting ${method}`);
+    };
+    found = call('findRecent').run('release', '', 7, 20, false, 5, '', true);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  assert.deepEqual(read, ['C1', 'C2', 'C3'], 'one page of each channel, not five');
+  assert.equal(found.total, 3);
+  assert.equal(found.nextCursor, null);
+  assert.equal(found.complete, false);
+  assert.ok(!found.incompleteBecause.includes('nextCursor'), found.incompleteBecause);
+  assert.match(found.incompleteBecause, /team-1, team-2, team-3 have older history .* name one channel/);
+});
+
+/*
  * Asked for: "can the agent skip days, to search even deeper?" days counted
  * back from now and stopped at a year; skipDays moves the window back, so
  * older history is searched a window at a time.

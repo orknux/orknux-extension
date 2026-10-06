@@ -981,8 +981,16 @@ function userOf(one) {
 
 /** Lower case with the marks taken off, and the letters NFD cannot split handled by hand. */
 function folded(text) {
-  return String(text ?? '')
-    .toLowerCase()
+  const lower = String(text ?? '').toLowerCase();
+  /*
+   * Text that is all ASCII has no marks to take off and none of the letters
+   * below, so the seven passes after this would hand it back unchanged - and
+   * this runs on every message a scan reads, which is thousands a call.
+   */
+  if (!/[^\x00-\x7f]/.test(lower)) {
+    return lower;
+  }
+  return lower
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/ł/g, 'l')
@@ -1046,25 +1054,70 @@ function parsedQuery(query) {
   return groups;
 }
 
-/** Whether the words hold the phrase: its stems, one after another. */
-function holds(words, phrase) {
-  for (let start = 0; start + phrase.length <= words.length; start += 1) {
-    if (phrase.every((stem, at) => words[start + at].startsWith(stem))) {
-      return true;
-    }
-  }
-  return false;
+/*
+ * A phrase as one regular expression over the folded text: its first stem at
+ * the start of a word, and each stem after it at the start of the word that
+ * follows. That is the same question as splitting the text into words and
+ * asking whether consecutive words start with the stems - a word is a run of
+ * letters and digits, so "starts a word" is "not preceded by one" - asked
+ * without making the words.
+ *
+ * Why it is asked this way: the server runs this file in an interpreter, where
+ * every call to a function - an arrow handed to every(), filter() or some() -
+ * allocates its frame on the heap, and this is asked of every message a scan
+ * reads. Splitting each one into words and walking them with closures cost
+ * about 80 KB of garbage a message, 16 MB a page of 200 and 400 MB a scan of
+ * fifteen channels, and an agent paging through history made that hundreds of
+ * megabytes a second for as long as it kept going (orknux-server #616). The
+ * expression runs inside the regex engine, which makes no frames at all.
+ */
+const WORD = '[\\p{L}\\p{N}]';
+const APART = '[^\\p{L}\\p{N}]+';
+
+function phraseOf(phrase) {
+  /* A stem is letters and digits by construction; escaped anyway, since it becomes a pattern. */
+  const stems = phrase.map((stem) => stem.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'));
+  return new RegExp(`(?<!${WORD})${stems.join(`${WORD}*${APART}`)}`, 'u');
 }
 
-/** Whether a text answers a parsed query: any group whose phrases are all there and whose exclusions are not. */
-function answers(text, groups) {
-  const words = wordsOf(text);
-  return groups.some(
-    (group) =>
-      group.must.length > 0 &&
-      group.must.every((phrase) => holds(words, phrase)) &&
-      !group.mustNot.some((phrase) => holds(words, phrase)),
-  );
+/**
+ * A parsed query made into the test a message is put to, once per call.
+ *
+ * Any group whose phrases are all there and whose exclusions are not. Before
+ * the expressions, every stem of a group is looked for as a plain substring:
+ * a word that starts with a stem holds it, so a text lacking one cannot
+ * answer, and that is most of the messages any query is put to.
+ */
+function matcherOf(groups) {
+  const compiled = groups
+    .filter((group) => group.must.length > 0)
+    .map((group) => ({
+      stems: group.must.flat(),
+      must: group.must.map(phraseOf),
+      mustNot: group.mustNot.map(phraseOf),
+    }));
+  return (text) => {
+    const flat = folded(text);
+    for (const group of compiled) {
+      let holds = true;
+      for (const stem of group.stems) {
+        if (!flat.includes(stem)) {
+          holds = false;
+          break;
+        }
+      }
+      for (let at = 0; holds && at < group.must.length; at += 1) {
+        holds = group.must[at].test(flat);
+      }
+      for (let at = 0; holds && at < group.mustNot.length; at += 1) {
+        holds = !group.mustNot[at].test(flat);
+      }
+      if (holds) {
+        return true;
+      }
+    }
+    return false;
+  };
 }
 
 /*
@@ -2978,7 +3031,7 @@ it notifies nobody else.`,
           'it sees recent history rather than the archive, and nothing in a channel the bot was ' +
           'never invited to. Each match says who wrote it as a userName as well as an id, which costs ' +
           'one lookup per distinct author among the matches shown. With one channel named it reads ' +
-          'further: pages of 200 messages each (five unless pages says otherwise, twenty at most), ' +
+          'further: pages of 200 messages each (five unless pages says otherwise, twenty at most; without a channel it reads one page of each, whatever pages says), ' +
           'and the replies inside threads as well as their first messages - a reply that matches says ' +
           'its threadTs. Where there is more behind what was read - older history, or threads it had no ' +
           'room to open - it answers nextCursor and says which in incompleteBecause: pass nextCursor as ' +
@@ -3004,6 +3057,7 @@ it notifies nobody else.`,
           if (groups.length === 0 || groups.every((group) => group.must.length === 0)) {
             throw new Error('there is nothing to look for');
           }
+          const answers = matcherOf(groups);
           const back = Math.min(Math.max(Math.trunc(days), 1), 365);
           const capped = Math.min(Math.max(Math.trunc(limit), 1), 200);
           /*
@@ -3039,8 +3093,15 @@ it notifies nobody else.`,
           reading = reading.slice(0, SCANNED);
           /* One channel named is the case that reads deep, pages on and threads opened. */
           const named = asked.length > 0 && reading.length === 1;
-          const pageCap =
-            Math.min(Math.max(Math.trunc(Number(pages) || 0), 0), PAGES_MOST) || (named ? PAGES_NAMED : PAGES_ACROSS);
+          /*
+           * pages is for the one channel named, as the description says, and
+           * never multiplies across all of them: it did, so a model passing
+           * pages 5 with no channel read seventy-five pages in one call, and
+           * twenty would have been three hundred (orknux-server #616).
+           */
+          const pageCap = named
+            ? Math.min(Math.max(Math.trunc(Number(pages) || 0), 0), PAGES_MOST) || PAGES_NAMED
+            : PAGES_ACROSS;
           /*
            * A cursor carries on through history, or - spelled threads:<ts>:<cursor> -
            * through the threads a call found and had no room to open: the same
@@ -3059,6 +3120,8 @@ it notifies nobody else.`,
           let threadsRead = 0;
           /* Why the answer is not the whole window, in words the agent can repeat. */
           const reasons = [];
+          /* The channels a scan of all of them left older history in, said once rather than per channel. */
+          const deeper = [];
           if (!complete) {
             reasons.push(`the bot is in more than ${SCANNED} channels and only ${SCANNED} were read - name one`);
           }
@@ -3075,7 +3138,7 @@ it notifies nobody else.`,
               return;
             }
             const text = at(one, 'text');
-            if (!answers(spokenIn(one), groups)) {
+            if (!answers(spokenIn(one))) {
               return;
             }
             const ts = at(one, 'ts');
@@ -3190,11 +3253,25 @@ it notifies nobody else.`,
               }
             } else if (atCursor.length > 0) {
               whole = false;
-              reasons.push('there is older history in the window - carry on with nextCursor');
               if (named) {
+                reasons.push('there is older history in the window - carry on with nextCursor');
                 nextCursor = atCursor;
+              } else {
+                deeper.push(where.name ?? where.id);
               }
             }
+          }
+          /*
+           * A scan of every channel answers no cursor, so it must not say to
+           * carry on with one: it did, fifteen times over, beside a nextCursor
+           * that was null - and what a model does with an instruction it cannot
+           * follow is try again harder.
+           */
+          if (deeper.length > 0) {
+            reasons.push(
+              `${deeper.join(', ')} ${deeper.length === 1 ? 'has' : 'have'} older history in the window than one ` +
+                'page - name one channel to read it further, page by page',
+            );
           }
 
           if (matches.length === 0 && refusals.length === reading.length && refusals.length > 0) {
