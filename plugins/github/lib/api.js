@@ -60,6 +60,7 @@ export function call(settings, asked) {
       accept: asked.accept === undefined ? 'application/vnd.github+json' : asked.accept,
       authorization: 'Bearer ' + token,
       'x-github-api-version': '2022-11-28',
+      ...(asked.headers === undefined ? {} : asked.headers),
     },
     body: asked.body,
   });

@@ -109,15 +109,15 @@ test('the github plugin declares what the server would accept', async () => {
    */
   assert.deepEqual(
     inspected.parameters.map((parameter) => parameter.name),
-    ['webhookSecret', 'token', 'classicToken', 'organization', 'apiUrl'],
+    ['webhookSecret', 'token', 'classicToken', 'defaultModel', 'organization', 'apiUrl'],
   );
   assert.deepEqual(
     inspected.parameters.map((parameter) => parameter.secret),
-    [true, true, true, false, false],
+    [true, true, true, false, false, false],
   );
   assert.deepEqual(
     inspected.parameters.map((parameter) => parameter.required),
-    [false, false, false, false, false],
+    [false, false, false, false, false, false],
   );
 
   assert.deepEqual(inspected.permissions, ['TEXT_ENCODING']);
@@ -136,6 +136,7 @@ test('the github plugin declares what the server would accept', async () => {
     'openFile',
     'fileHistory',
     'createAgentTask',
+    'listAgentModels',
     'agentTask',
     'agentTaskLogs',
     'messageAgentTask',
@@ -3732,4 +3733,59 @@ test('slack findRecent searches a window moved back by skipDays', async () => {
   /* And the answer says where it was. */
   assert.equal(found.until, new Date(latest * 1000).toISOString());
   assert.equal(found.since, new Date(oldest * 1000).toISOString());
+});
+
+test('github createAgentTask asks for the model it was given, the default otherwise, and a pull request', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const withSettings = (settings) => {
+    const plugin = Object.create(Github.prototype);
+    Object.defineProperty(plugin, 'settings', { value: Object.freeze(settings) });
+    return (name, ...args) => plugin.functions().find((one) => one.name === name).run(...args);
+  };
+
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      if (what.url === 'https://api.githubcopilot.com/models') {
+        return {
+          status: 200,
+          headers: {},
+          body: '',
+          json: {
+            data: [
+              { id: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6', vendor: 'Anthropic', capabilities: { type: 'chat' }, policy: { state: 'enabled' } },
+              { id: 'gpt-5.4', name: 'GPT-5.4', vendor: 'OpenAI', preview: true, capabilities: { type: 'chat' } },
+              { id: 'o-locked', name: 'Locked', vendor: 'OpenAI', capabilities: { type: 'chat' }, policy: { state: 'disabled' } },
+              { id: 'text-embedding-3', name: 'Embedding', vendor: 'OpenAI', capabilities: { type: 'embeddings' } },
+            ],
+          },
+        };
+      }
+      return { status: 201, headers: {}, body: '', json: { id: 't1', state: 'queued', html_url: 'https://github.com/acme/api/tasks/t1' } };
+    };
+
+    const plain = withSettings({ token: 'ghp_x', organization: 'acme' });
+    const configured = withSettings({ token: 'ghp_x', organization: 'acme', defaultModel: ' gpt-5.4 ' });
+
+    plain('createAgentTask', '', 'api', 'Fix it', '', '');
+    configured('createAgentTask', '', 'api', 'Fix it', '', '');
+    configured('createAgentTask', '', 'api', 'Fix it', '', 'claude-opus-4.6');
+    const bodies = asked.map((one) => one.body);
+    assert.equal(bodies[0].model, undefined, 'no model and no default leaves GitHub to choose');
+    assert.equal(bodies[1].model, 'gpt-5.4', 'the default, trimmed');
+    assert.equal(bodies[2].model, 'claude-opus-4.6', 'a named model beats the default');
+    assert.ok(bodies.every((one) => one.create_pull_request === true), 'every task asks for its pull request');
+
+    const listed = configured('listAgentModels');
+    assert.deepEqual(listed.models.map((one) => one.id), ['claude-sonnet-4.6', 'gpt-5.4']);
+    assert.equal(listed.models[1].preview, true);
+    assert.equal(listed.defaultModel, 'gpt-5.4');
+    assert.equal(asked.at(-1).headers['copilot-integration-id'], 'copilot-developer-cli');
+    assert.equal(asked.at(-1).headers.authorization, 'Bearer ghp_x');
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
 });

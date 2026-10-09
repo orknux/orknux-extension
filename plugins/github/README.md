@@ -58,7 +58,8 @@ about which token these accept.
 
 | Function | Answers |
 |---|---|
-| `createAgentTask(owner, repo, prompt, baseRef = "")` | Starts a task: the agent works the prompt on its own branch and opens a draft pull request. Answers `id`, `state`, `url`, `created`. |
+| `createAgentTask(owner, repo, prompt, baseRef = "", model = "")` | Starts a task: the agent works the prompt on its own branch and opens a draft pull request. `model` picks who works it; empty uses `defaultModel`, or GitHub's own choice. Answers `id`, `state`, `url`, `created`. |
+| `listAgentModels()` | The models Copilot offers the token's plan - `id`, `name`, `vendor`, `preview` - and the configured `defaultModel`. Read from `api.githubcopilot.com/models`, which the installation's proxy rules must allow. |
 | `agentTask(owner, repo, taskId)` | The task as GitHub sees it now — `state` (`queued`, `in_progress`, `completed`, `failed`, `waiting_for_user`, …), its pull request, and its **sessions**, whose ids the next function takes. |
 | `agentTaskLogs(sessionId)` | The log text of one session: the agent's own account of what it read, decided and changed. |
 | `messageAgentTask(owner, repo, pullNumber, message)` | Steers a running or finished task — different approach, more work, a fix. Done the way GitHub does it: a comment mentioning `@copilot` on the task's pull request. |
@@ -125,6 +126,7 @@ searches the org's work rather than all of GitHub.
 | `webhookSecret` | The secret GitHub signs deliveries with. **Secret**, so a typed-in value is refused — a workspace variable is the only answer it takes. Only `verify` uses it. |
 | `token` | A fine-grained personal access token, or a GitHub App user token. **Secret**. Every function except the webhook pair needs it. |
 | `classicToken` | A classic personal access token with `repo` scope. **Secret**. Only `buildStatus` reaches for it, and only when `token` was refused — see below. |
+| `defaultModel` | The model an agent task uses when the call names none, as `listAgentModels` spells it. Optional; empty lets GitHub choose. |
 | `organization` | The owner to fall back to, as above. Optional. |
 | `apiUrl` | Points the whole surface at a GitHub Enterprise Server. Empty means `api.github.com`. |
 

@@ -109,6 +109,22 @@ import {
   statusError,
 } from './lib/api.js';
 
+/** Where Copilot lists the models a token's plan offers; see listAgentModels. */
+const COPILOT_MODELS = 'https://api.githubcopilot.com/models';
+
+/**
+ * The model a task is asked to use: the one the call named, else the plugin's
+ * default, else null - which leaves the field out and lets GitHub choose.
+ */
+function chosenModel(settings, asked) {
+  for (const one of [asked, settings.defaultModel]) {
+    if (typeof one === 'string' && one.trim().length > 0) {
+      return one.trim();
+    }
+  }
+  return null;
+}
+
 /**
  * A hex digest as the base64 of the same bytes.
  *
@@ -188,6 +204,14 @@ export default class Github extends OrknuxPlugin {
         // same way as the other two.
         required: false,
         secret: true,
+      }),
+      new OrknuxParameter({
+        name: 'defaultModel',
+        description:
+          'The model a Copilot agent task is worked by when the call names none - claude-sonnet-4.6, ' +
+          'gpt-5.4 - as listAgentModels spells it. Left empty, GitHub chooses.',
+        type: 'string',
+        required: false,
       }),
       new OrknuxParameter({
         name: 'organization',
@@ -562,6 +586,26 @@ export default class Github extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'AgentModel',
+        description: 'A model Copilot offers this token.',
+        properties: [
+          { name: 'id', kind: 'string', description: 'What createAgentTask\'s model takes.' },
+          { name: 'name', kind: 'string', description: 'What GitHub calls it on screen.' },
+          { name: 'vendor', kind: 'string', description: 'Who makes it: Anthropic, OpenAI, Google…' },
+          { name: 'preview', kind: 'boolean', description: 'Whether GitHub still calls it a preview.' },
+        ],
+      }),
+
+      new OrknuxObject({
+        name: 'AgentModels',
+        description: 'The models Copilot offers this token, and the one tasks use when none is named.',
+        properties: [
+          { name: 'models', kind: 'array', of: 'AgentModel', description: 'Every chat model the plan enables.' },
+          { name: 'defaultModel', kind: 'string', description: 'The plugin\'s default, or null where GitHub chooses.' },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'Comment',
         description: 'A comment that was posted.',
         properties: [
@@ -690,6 +734,15 @@ you did not open.`,
 \`github_createAgentTask\` hands a prompt to GitHub's Copilot cloud agent. It
 works in its own branch and opens a draft pull request. This is asynchronous:
 the call returns immediately and the work is not done.
+
+## Choosing the model
+
+Leave \`model\` empty unless somebody asked for one: the plugin's default is
+used, or GitHub's own choice where there is none. When a person names a model -
+"use Opus", "try GPT" - \`github_listAgentModels\` answers the ids this plan
+offers; pass the one they meant, spelled as it spells it. The cloud agent takes
+fewer models than chat does, and GitHub refuses one it does not take, naming
+the problem - then pick another from the list or leave it empty.
 
 ## Write the prompt like a ticket
 
@@ -989,6 +1042,7 @@ minutes for everybody on the PR.`,
       new OrknuxFunctionTool({ function: 'openFile' }),
       new OrknuxFunctionTool({ function: 'fileHistory' }),
       new OrknuxFunctionTool({ function: 'createAgentTask' }),
+      new OrknuxFunctionTool({ function: 'listAgentModels' }),
       new OrknuxFunctionTool({ function: 'agentTask' }),
       new OrknuxFunctionTool({ function: 'agentTaskLogs' }),
       new OrknuxFunctionTool({ function: 'messageAgentTask' }),
@@ -1593,23 +1647,36 @@ minutes for everybody on the PR.`,
           'Starts a GitHub Copilot cloud agent task: the agent works the prompt in its own branch and ' +
           'opens a draft pull request. Pass owner and repo (or the repo as owner/name, or an empty owner ' +
           'for the configured organization), the prompt saying what to do, and a base branch - or an ' +
-          'empty baseRef for the default branch. Answers the task\'s id, state and url; follow it with ' +
-          'agentTask. Needs a user token with Copilot access.',
+          'empty baseRef for the default branch. model is which model works it, as listAgentModels ' +
+          'spells it - empty for the plugin\'s default, or GitHub\'s own choice where none is set. ' +
+          'Answers the task\'s id, state and url; follow it with agentTask. Needs a user token with ' +
+          'Copilot access.',
         params: [
           { name: 'owner', type: 'string' },
           { name: 'repo', type: 'string' },
           { name: 'prompt', type: 'string' },
           { name: 'baseRef', type: 'string', required: false, default: '' },
+          { name: 'model', type: 'string', required: false, default: '' },
         ],
         returnType: 'AgentTask',
-        run: (owner, repo, prompt, baseRef) => {
+        run: (owner, repo, prompt, baseRef, model) => {
           if (typeof prompt !== 'string' || prompt.trim().length === 0) {
             throw new Error('an agent task needs a prompt saying what to do');
           }
           const base = repoPath(this.settings, owner, repo);
-          const body = { prompt: prompt };
+          /*
+           * create_pull_request said out loud. GitHub's reference gives it a
+           * default of false, and a task that opens no pull request leaves
+           * every step this plugin teaches after it - wait for the draft, read
+           * its build, send it for review - with nothing to stand on.
+           */
+          const body = { prompt: prompt, create_pull_request: true };
           if (typeof baseRef === 'string' && baseRef.length > 0) {
             body.base_ref = baseRef;
+          }
+          const chosen = chosenModel(this.settings, model);
+          if (chosen !== null) {
+            body.model = chosen;
           }
           const made = read(this.settings, { method: 'POST', path: `/agents${base}/tasks`, body: body }).json;
           return {
@@ -1618,6 +1685,49 @@ minutes for everybody on the PR.`,
             url: at(made, 'html_url') ?? at(made, 'url'),
             created: at(made, 'created_at'),
           };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'listAgentModels',
+        description:
+          'The models GitHub Copilot offers this token\'s plan, for createAgentTask\'s model: id, name, ' +
+          'vendor and whether it is a preview, plus the plugin\'s default. The cloud agent takes fewer ' +
+          'than chat does, and refuses one it does not take. Needs a user token with Copilot access.',
+        params: [],
+        returnType: 'AgentModels',
+        /*
+         * Copilot's own list, from its own API: the agent-tasks reference names
+         * the models it takes but has no endpoint that lists them, and a list
+         * written into this file would be wrong by the next release of either.
+         * The integration id is the one GitHub's CLI sends, which that API
+         * accepts with a personal token.
+         */
+        run: () => {
+          const answered = call(this.settings, {
+            url: COPILOT_MODELS,
+            path: '/models',
+            headers: { 'copilot-integration-id': 'copilot-developer-cli' },
+          });
+          if (answered.status >= 400) {
+            const refused = statusError(answered, '/models');
+            throw new Error(
+              `${refused.message} - Copilot would not list its models for this token; leave model empty ` +
+                'and GitHub chooses',
+            );
+          }
+          const listed = at(answered.json, 'data');
+          const models = (Array.isArray(listed) ? listed : [])
+            .filter((one) => at(at(one, 'capabilities'), 'type') === 'chat')
+            .filter((one) => at(at(one, 'policy'), 'state') !== 'disabled')
+            .map((one) => ({
+              id: at(one, 'id'),
+              name: at(one, 'name'),
+              vendor: at(one, 'vendor'),
+              preview: at(one, 'preview') === true,
+            }))
+            .filter((one) => typeof one.id === 'string');
+          return { models: models, defaultModel: chosenModel(this.settings, '') };
         },
       }),
 
