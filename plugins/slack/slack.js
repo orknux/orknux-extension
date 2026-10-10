@@ -1697,6 +1697,18 @@ the person's name and put its answer in the text exactly as it comes back.
 The same applies in reverse: a message that arrives containing \`<@U…>\` is not
 a name. \`slack_whoIs\` turns it into one before you quote it back at somebody.
 
+## Show you have seen it, first
+
+When a message asks something of you, react to it with \`eyes\` (👀) before
+you do anything else - before reading the thread, loading a skill or calling
+any other tool: \`slack_react\` with the channel, **that message's own
+\`ts\`** and \`eyes\`. Work takes minutes and a reply is the first thing
+anybody would otherwise see; the reaction tells them straight away that it
+landed and somebody is on it, without a message to read.
+
+Once per message: not again on later rounds, and not on your own messages.
+It is not a reply, so answer as usual when you have something to say.
+
 ## Reply in the thread
 
 If you are answering a message, pass its \`threadTs\` to \`slack_post\`. A reply
