@@ -575,6 +575,37 @@ export default class Github extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'LineMatch',
+        description: 'One line of a file that matched, by its number.',
+        properties: [
+          { name: 'line', kind: 'number', description: '1-based; openFile\'s fromLine and toLine take it.' },
+          { name: 'text', kind: 'string', description: 'The line itself.' },
+          {
+            name: 'before',
+            kind: 'array',
+            of: 'string',
+            description: 'The lines just above it, in order. Null unless context was asked for.',
+          },
+          {
+            name: 'after',
+            kind: 'array',
+            of: 'string',
+            description: 'The lines just below it, in order. Null unless context was asked for.',
+          },
+        ],
+      }),
+
+      new OrknuxObject({
+        name: 'FileMatches',
+        description: 'Where a pattern occurs in one file, by line number.',
+        properties: [
+          { name: 'lines', kind: 'number', description: 'How many lines the file has in total.' },
+          { name: 'matched', kind: 'number', description: 'How many lines matched, whether or not all are listed.' },
+          { name: 'matches', kind: 'array', of: 'LineMatch', description: 'In file order, capped by limit.' },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'AgentTask',
         description: 'A Copilot cloud agent task as it was started.',
         properties: [
@@ -719,6 +750,11 @@ Look things up rather than assuming: \`github_openFile\` at the PR's head sha
 shows what a function actually does now, and \`github_fileHistory\` shows
 whether the line you are about to question was deliberate.
 
+Find a line with \`github_findInFile\`, or \`github_openFile\` with \`numbered\`
+and a \`fromLine\`/\`toLine\` range - never by counting lines yourself. To change
+a file, clone the repository into a box with whatever box or shell tools you
+have and edit it there with \`orkbox_edit\`, not by sending the whole file back.
+
 ## Searching first
 
 \`github_searchCode\` before claiming something is unused, duplicated or
@@ -829,8 +865,9 @@ draft is your job, and it is the last step, once all of these hold:
 3. **You reviewed it and have nothing to object to.** Read the whole diff
    \`github_openPull\` answers, not the title and the first file; look up what
    a changed function does now with \`github_openFile\` at the head sha before
-   questioning it; and check the change does what the task asked and nothing it
-   was told to leave alone. Remember the agent had no more context than the
+   questioning it - \`github_findInFile\` or a \`numbered\` \`fromLine\`/\`toLine\`
+   range finds the line, never counting; and check the change does what the
+   task asked and nothing it was told to leave alone. Remember the agent had no more context than the
    prompt gave it. And \`github_pullComments\`: \`unresolved\` should be 0 -
    an open thread is somebody's objection that nobody has answered yet, and
    that is a complaint even when it is not yours.
@@ -951,6 +988,12 @@ already there. That is worth a call before blaming anybody: a check that was
 failing on the base branch too is not this PR's fault, and saying so is more
 useful than a fix.
 
+Find the failing line with \`github_findInFile\`, or \`github_openFile\` with
+\`numbered\` and a \`fromLine\`/\`toLine\` range - never by counting lines
+yourself. To change a file, clone the repository into a box with whatever box
+or shell tools you have and edit it there with \`orkbox_edit\`, not by sending
+the whole file back.
+
 ## Fix it, or hand it back — never open a second pull request
 
 **Fixing it yourself** means using whatever tool you have that can change the
@@ -1040,6 +1083,7 @@ minutes for everybody on the PR.`,
       new OrknuxFunctionTool({ function: 'reviews' }),
       new OrknuxFunctionTool({ function: 'buildStatus' }),
       new OrknuxFunctionTool({ function: 'openFile' }),
+      new OrknuxFunctionTool({ function: 'findInFile' }),
       new OrknuxFunctionTool({ function: 'fileHistory' }),
       new OrknuxFunctionTool({ function: 'createAgentTask' }),
       new OrknuxFunctionTool({ function: 'listAgentModels' }),
@@ -1587,27 +1631,95 @@ minutes for everybody on the PR.`,
         description:
           'Reads one file out of a repository, as the text it is. Pass owner and repo (or the repo as ' +
           'owner/name, or an empty owner for the configured organization), the path from the repository ' +
-          'root, and a branch, tag or sha - or no ref for the default branch.',
+          'root, and a branch, tag or sha - or no ref for the default branch. To find a line, never count ' +
+          'lines yourself: pass numbered true and every line comes prefixed with its number, and fromLine ' +
+          'and toLine (1-based, inclusive) read only that stretch - toLine 0 reads to the end. Either one ' +
+          'puts a first line saying which lines these are and how many the file has. findInFile finds ' +
+          'the line numbers of a pattern without reading the whole file.',
         params: [
           { name: 'owner', type: 'string' },
           { name: 'repo', type: 'string' },
           { name: 'path', type: 'string' },
           { name: 'ref', type: 'string', required: false, default: '' },
+          { name: 'fromLine', type: 'number', required: false, default: 1 },
+          { name: 'toLine', type: 'number', required: false, default: 0 },
+          { name: 'numbered', type: 'boolean', required: false, default: false },
         ],
         returnType: 'string',
-        run: (owner, repo, path, ref) => {
-          const base = repoPath(this.settings, owner, repo);
-          const marked = typeof ref === 'string' && ref.length > 0 ? `?ref=${encodeURIComponent(ref)}` : '';
+        run: (owner, repo, path, ref, fromLine, toLine, numbered) => {
+          const text = rawFile(this.settings, owner, repo, path, ref);
+          const from = Math.max(Math.floor(Number(fromLine) || 1), 1);
+          const to = Math.floor(Number(toLine) || 0);
           /*
-           * The raw variant, asked for in the accept header, so what comes back
-           * is the file — not JSON holding the file as base64, which the
-           * sandbox has no atob to open.
+           * Untouched unless something was asked for, so a workflow that has
+           * always taken the file as it is still gets exactly that.
            */
-          const answered = read(this.settings, {
-            path: `${base}/contents/${escapedPath(path)}${marked}`,
-            accept: 'application/vnd.github.raw+json',
-          });
-          return answered.body;
+          if (from === 1 && to <= 0 && numbered !== true) {
+            return text;
+          }
+          return fileExcerpt(path, text, from, to, numbered === true);
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'findInFile',
+        description:
+          'Finds the lines of one file that match a pattern, and answers each with its line number - the ' +
+          'way to know where something is before reading or changing it, instead of counting. Pass owner ' +
+          'and repo (or the repo as owner/name, or an empty owner for the configured organization), the ' +
+          'path from the repository root, the pattern, and a branch, tag or sha - or no ref for the ' +
+          'default branch. The pattern is plain text matched case-sensitively, or a JavaScript regular ' +
+          'expression where regex is true. context adds that many lines above and below each match. ' +
+          'limit caps the matches listed; matched says how many there were. Then openFile with ' +
+          'fromLine and toLine reads around one.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'path', type: 'string' },
+          { name: 'pattern', type: 'string' },
+          { name: 'ref', type: 'string', required: false, default: '' },
+          { name: 'regex', type: 'boolean', required: false, default: false },
+          { name: 'context', type: 'number', required: false, default: 0 },
+          { name: 'limit', type: 'number', required: false, default: 50 },
+        ],
+        returnType: 'FileMatches',
+        run: (owner, repo, path, pattern, ref, regex, context, limit) => {
+          if (typeof pattern !== 'string' || pattern.length === 0) {
+            throw new Error('findInFile needs a pattern to look for');
+          }
+          let matcher;
+          if (regex === true) {
+            let expression;
+            try {
+              expression = new RegExp(pattern);
+            } catch (problem) {
+              throw new Error(`the pattern is not a regular expression JavaScript accepts: ${problem.message}`);
+            }
+            matcher = (line) => expression.test(line);
+          } else {
+            matcher = (line) => line.indexOf(pattern) !== -1;
+          }
+
+          const lines = linesOf(rawFile(this.settings, owner, repo, path, ref));
+          const around = Math.min(Math.max(Math.floor(Number(context) || 0), 0), 20);
+          const cap = Math.min(Math.max(Math.floor(Number(limit) || 0), 1), 500);
+          const matches = [];
+          let matched = 0;
+          for (let index = 0; index < lines.length; index++) {
+            if (!matcher(lines[index])) {
+              continue;
+            }
+            matched++;
+            if (matches.length < cap) {
+              matches.push({
+                line: index + 1,
+                text: clipped(lines[index]),
+                before: around > 0 ? lines.slice(Math.max(index - around, 0), index).map(clipped) : null,
+                after: around > 0 ? lines.slice(index + 1, index + 1 + around).map(clipped) : null,
+              });
+            }
+          }
+          return { lines: lines.length, matched: matched, matches: matches };
         },
       }),
 
@@ -2092,6 +2204,69 @@ minutes for everybody on the PR.`,
       }),
     ];
   }
+}
+
+/** One file's text at a ref, or at the default branch where the ref is empty. */
+function rawFile(settings, owner, repo, path, ref) {
+  const base = repoPath(settings, owner, repo);
+  const marked = typeof ref === 'string' && ref.length > 0 ? `?ref=${encodeURIComponent(ref)}` : '';
+  /*
+   * The raw variant, asked for in the accept header, so what comes back is the
+   * file — not JSON holding the file as base64, which the sandbox has no atob
+   * to open.
+   */
+  const answered = read(settings, {
+    path: `${base}/contents/${escapedPath(path)}${marked}`,
+    accept: 'application/vnd.github.raw+json',
+  });
+  return typeof answered.body === 'string' ? answered.body : '';
+}
+
+/**
+ * A file's lines, as an editor numbers them: a final newline ends the last
+ * line rather than starting an empty one, and a CRLF file's carriage returns
+ * are not part of any line.
+ */
+function linesOf(text) {
+  if (text.length === 0) {
+    return [];
+  }
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  return lines.map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
+}
+
+/**
+ * A line cut short where it is too long to be worth answering whole — one line
+ * of a minified bundle is the whole bundle, and a match in it should not cost
+ * a model the file it was trying not to read.
+ */
+function clipped(line) {
+  return line.length > 400 ? `${line.slice(0, 400)}…` : line;
+}
+
+/**
+ * A stretch of a file, optionally numbered, under a line that says which
+ * stretch and how many lines there are — the number a model was otherwise
+ * counting its way to.
+ */
+function fileExcerpt(path, text, from, to, numbered) {
+  const lines = linesOf(text);
+  const total = lines.length;
+  const last = to <= 0 || to > total ? total : to;
+  if (from > total) {
+    return `${path} has ${total} lines; line ${from} is past the end.`;
+  }
+  if (last < from) {
+    return `${path} has ${total} lines; toLine ${to} is before fromLine ${from}, so there is nothing to show.`;
+  }
+  const width = Math.max(String(last).length, 4);
+  const shown = lines
+    .slice(from - 1, last)
+    .map((line, index) => (numbered ? `${String(from + index).padStart(width, ' ')}| ${line}` : line));
+  return `${path}: lines ${from}-${last} of ${total}\n${shown.join('\n')}`;
 }
 
 /** The owner and name a repository call means, unencoded - what GraphQL takes. */

@@ -134,6 +134,7 @@ test('the github plugin declares what the server would accept', async () => {
     'reviews',
     'buildStatus',
     'openFile',
+    'findInFile',
     'fileHistory',
     'createAgentTask',
     'listAgentModels',
@@ -296,6 +297,84 @@ test('github editPull sends only what was given, and refuses to send nothing', a
     body: 'kept',
     url: 'https://github.com/acme/api/pull/7',
   });
+});
+
+test('github openFile reads a numbered range and says how long the file is, and is unchanged when asked for nothing', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const plugin = Object.create(Github.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ token: 'ghp_x', organization: 'acme' }) });
+  const openFile = plugin.functions().find((one) => one.name === 'openFile');
+
+  const file = Array.from({ length: 15 }, (_, index) => `line ${index + 1}`).join('\n') + '\n';
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  let whole, ranged, numbered, both, past;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      return { status: 200, headers: {}, body: file, json: null };
+    };
+    /* The defaults the server would put in: ref '', fromLine 1, toLine 0, numbered false. */
+    whole = openFile.run('', 'api', 'src/a.ts', '', 1, 0, false);
+    ranged = openFile.run('', 'api', 'src/a.ts', 'main', 3, 5, false);
+    numbered = openFile.run('', 'api', 'src/a.ts', '', 1, 0, true);
+    both = openFile.run('', 'api', 'src/a.ts', '', 11, 12, true);
+    past = openFile.run('', 'api', 'src/a.ts', '', 40, 0, false);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  assert.equal(whole, file);
+  assert.equal(asked[0].url, 'https://api.github.com/repos/acme/api/contents/src/a.ts');
+  assert.equal(asked[1].url, 'https://api.github.com/repos/acme/api/contents/src/a.ts?ref=main');
+
+  assert.equal(ranged, 'src/a.ts: lines 3-5 of 15\nline 3\nline 4\nline 5');
+  assert.equal(numbered.split('\n')[0], 'src/a.ts: lines 1-15 of 15');
+  assert.equal(numbered.split('\n')[1], '   1| line 1');
+  assert.equal(numbered.split('\n').length, 16);
+  assert.equal(both, 'src/a.ts: lines 11-12 of 15\n  11| line 11\n  12| line 12');
+  assert.match(past, /has 15 lines; line 40 is past the end/);
+});
+
+test('github findInFile answers line numbers, by text or by regex, with context and a cap', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const plugin = Object.create(Github.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ token: 'ghp_x', organization: 'acme' }) });
+  const findInFile = plugin.functions().find((one) => one.name === 'findInFile');
+
+  const file = ['import x', 'function rate() {', '  return 1;', '}', '', 'function rates() {', '  return 2;', '}'].join('\r\n');
+  const door = globalThis.orknux.http.request;
+  let plain, regex, capped;
+  try {
+    globalThis.orknux.http.request = () => ({ status: 200, headers: {}, body: file, json: null });
+    plain = findInFile.run('', 'api', 'src/b.ts', 'return', '', false, 0, 50);
+    regex = findInFile.run('', 'api', 'src/b.ts', '^function rates?\\(', '', true, 1, 50);
+    capped = findInFile.run('', 'api', 'src/b.ts', 'function', '', false, 0, 1);
+    assert.throws(() => findInFile.run('', 'api', 'src/b.ts', '(', '', true, 0, 50), /not a regular expression/);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  assert.deepEqual(plain, {
+    lines: 8,
+    matched: 2,
+    matches: [
+      { line: 3, text: '  return 1;', before: null, after: null },
+      { line: 7, text: '  return 2;', before: null, after: null },
+    ],
+  });
+  assert.deepEqual(regex, {
+    lines: 8,
+    matched: 2,
+    matches: [
+      { line: 2, text: 'function rate() {', before: ['import x'], after: ['  return 1;'] },
+      { line: 6, text: 'function rates() {', before: [''], after: ['  return 2;'] },
+    ],
+  });
+  assert.equal(capped.matched, 2);
+  assert.deepEqual(capped.matches.map((one) => one.line), [2]);
 });
 
 test('github takes a draft to review through GraphQL, and leaves one already there alone', async () => {
