@@ -1915,7 +1915,7 @@ test('the jira plugin declares what the server would accept', async () => {
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['search', 'openIssue', 'comment', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged'],
+    ['search', 'openIssue', 'comment', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged', 'isMentioned'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
@@ -1955,7 +1955,7 @@ test('the jira plugin declares what the server would accept', async () => {
 
   assert.deepEqual(
     inspected.functions.map((one) => one.returnType),
-    ['Search', 'Issue', 'Comment', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged'],
+    ['Search', 'Issue', 'Comment', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged', 'boolean'],
   );
   /* A proxy carries its function's own return, so the tools agree by construction. */
   assert.deepEqual(
@@ -2328,6 +2328,45 @@ test('jira link says the relation as a verb, and openIssue reads links from its 
       { type: 'Dependency', relation: 'depends on', key: 'OKO-4124', summary: 'isPrepaidStoreOrder()', status: 'Done' },
       { type: 'Blocks', relation: 'is blocked by', key: 'OKO-1', summary: 'Something', status: 'To Do' },
     ]);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+});
+
+test('jira isMentioned reads a mention on Server and on Cloud, and the bot when no user is named', async () => {
+  const url = new URL(`../../plugins/jira/jira.js`, import.meta.url);
+  const { default: Jira } = await import(url.href);
+  const on = (connection) => {
+    const plugin = Object.create(Jira.prototype);
+    Object.defineProperty(plugin, 'settings', { value: Object.freeze({ jira: connection }) });
+    return plugin.functions().find((one) => one.name === 'isMentioned');
+  };
+  const door = globalThis.orknux.http.request;
+  const asked = [];
+  globalThis.orknux.http.request = (what) => {
+    asked.push(what.url);
+    if (what.url.endsWith('/myself')) {
+      return { status: 200, headers: {}, body: '{}', json: { name: 'oko.bot', accountId: '5b10ac8d82e05b22cc7d4ef5' } };
+    }
+    /* A user search: one hit for "Anna". */
+    return { status: 200, headers: {}, body: '[]', json: [{ name: 'anna.k', accountId: '61a0', displayName: 'Anna' }] };
+  };
+  try {
+    const server = on(serverJira);
+    /* No user: whoever the connection signs in as, asked of Jira. */
+    assert.equal(server.run('Thanks [~OKO.BOT], can you check?', ''), true);
+    assert.ok(asked.some((one) => one.endsWith('/rest/api/2/myself')));
+    assert.equal(server.run('Thanks [~anna.k]', ''), false);
+    /* A person named as people say them. */
+    assert.equal(server.run('cc [~anna.k]', 'Anna'), true);
+    /* Text with no mention at all asks nothing. */
+    const before = asked.length;
+    assert.equal(server.run('no mention here', ''), false);
+    assert.equal(asked.length, before);
+
+    const cloud = on(cloudJira);
+    assert.equal(cloud.run('ping [~accountid:5b10ac8d82e05b22cc7d4ef5] please', ''), true);
+    assert.equal(cloud.run('ping [~accountid:61a0]', ''), false);
   } finally {
     globalThis.orknux.http.request = door;
   }

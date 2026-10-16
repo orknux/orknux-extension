@@ -1510,6 +1510,51 @@ is in use, its entries appear here too, but its approval state does not.`,
           return { user: who, from: first, to: last, hours: Math.round((total / 3600) * 100) / 100, days: days };
         },
       }),
+      /*
+       * A condition rather than a tool, which is why tools() does not front
+       * it: what it answers is a yes or a no for a workflow to branch on -
+       * "was the bot mentioned in this comment" - and an agent reading a
+       * comment can see a mention for itself.
+       */
+      new OrknuxFunction({
+        name: 'isMentioned',
+        description:
+          'Whether a Jira text - a comment, a description - mentions a user. Jira writes a mention ' +
+          'as [~username] on Server and Data Center and as [~accountid:...] on Cloud, and this reads ' +
+          'both. The user is "me", a display name, a username, an email or an id; left empty it is ' +
+          'the account the Jira connection signs in as, so a condition can ask whether the bot was ' +
+          'mentioned.',
+        params: [
+          { name: 'text', type: 'string' },
+          { name: 'user', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'boolean',
+        run: (text, user) => {
+          if (typeof text !== 'string' || text.indexOf('[~') === -1) {
+            return false;
+          }
+          const named = typeof user === 'string' ? user.trim() : '';
+          /*
+           * Looked up rather than compared with what was said, because a
+           * mention carries the username or the account id and a person says
+           * a display name. A lookup that fails throws: "could not tell" is
+           * not "not mentioned", and a condition that quietly answered no the
+           * day a token expired would stop a workflow with nobody told.
+           */
+          const who = userOf(this.settings, named === '' ? 'me' : named);
+          const id = isCloud(this.settings) ? at(who, 'accountId') : at(who, 'name');
+          if (typeof id !== 'string' || id === '') {
+            throw new Error(`could not tell who ${named === '' ? 'this connection signs in as' : named} is in Jira`);
+          }
+          const wanted = id.toLowerCase();
+          /* Every [~...] in the text; an account id may be written with or without its prefix. */
+          const found = text.match(/\[~([^\]]+)\]/g) ?? [];
+          return found.some((mention) => {
+            const said = mention.slice(2, -1).trim().toLowerCase();
+            return said === wanted || said === `accountid:${wanted}`;
+          });
+        },
+      }),
     ];
   }
 }

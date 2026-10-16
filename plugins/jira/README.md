@@ -21,6 +21,7 @@ behalf under `NETWORK_REQUEST` — the plugin never holds the token.
 | `link(from, relation, to)` | Links two issues, the relation said as a verb — `"depends on"`, `"blocks"`, `"relates to"` — and matched against this Jira's link types. |
 | `groupMembers(group)` | Who is in a Jira group, by name — the way a team is usually kept. |
 | `timeLogged(user, from = "", to = "")` | What one person logged in Jira's work log, day by day. Both dates empty means last week, Monday to Sunday. |
+| `isMentioned(text, user = "")` | Whether a comment or description mentions a user — `[~username]` on Server, `[~accountid:…]` on Cloud. Empty means the connection's own account, so a **Function** condition can ask whether the bot was mentioned. A condition, not an agent tool. |
 
 `transition` takes a status or transition **by name**, matched whatever the
 capitals, because an id is a number out of somebody's workflow configuration
