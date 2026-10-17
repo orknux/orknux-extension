@@ -259,6 +259,14 @@ async function report(file: string): Promise<number> {
       if (kind.description !== null && kind.description !== undefined) {
         process.stdout.write(`        ${kind.description}\n`);
       }
+      /* What the connection page will show and do for it, since neither is visible from the declaration's line. */
+      const extras = [
+        kind.guide ? `a setup guide of ${kind.guide.length} characters` : null,
+        kind.checks ? 'a check that Test runs' : null,
+      ].filter((one) => one !== null);
+      if (extras.length > 0) {
+        process.stdout.write(`        With ${extras.join(' and ')}.\n`);
+      }
     }
   }
 

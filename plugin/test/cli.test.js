@@ -62,6 +62,13 @@ test('the report names the kinds of connection a plugin declares, by the id a co
   assert.match(report, /prometheus_query\(prometheus: connection, promql: string/);
 });
 
+test('the report says a kind of connection brings a guide and a check', () => {
+  const report = checked(shipped('anki'));
+
+  assert.match(report, /AnkiConnect {2}\(anki\/ankiconnect\)/);
+  assert.match(report, /With a setup guide of \d+ characters and a check that Test runs\./);
+});
+
 test('the report names the skills a plugin brings, and what each is for', () => {
   const report = checked(shipped('github'));
 

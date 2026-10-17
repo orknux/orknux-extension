@@ -405,11 +405,22 @@ function readType(declared: Record<string, unknown>): DeclaredType {
 }
 
 function readConnectionType(declared: Record<string, unknown>): DeclaredConnectionType {
+  const name = text(declared, 'name') ?? refuse('a connection type has no name');
+  /*
+   * Read as the loader reads a type's validate: whether there is one, since a
+   * function does not cross. One that is there and not a function is refused
+   * here rather than recorded as absent, because the plugin meant something.
+   */
+  if (declared['check'] !== undefined && typeof declared['check'] !== 'function') {
+    refuse(`the connection type ${name} has a check that is not a function`);
+  }
   return {
-    name: text(declared, 'name') ?? refuse('a connection type has no name'),
+    name,
     label: text(declared, 'label') ?? refuse('a connection type has no label'),
     description: text(declared, 'description') ?? null,
     urlPlaceholder: text(declared, 'urlPlaceholder') ?? null,
+    guide: text(declared, 'guide') ?? null,
+    checks: typeof declared['check'] === 'function',
   };
 }
 

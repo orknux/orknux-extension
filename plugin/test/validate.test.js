@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  MAX_CONNECTION_GUIDE_CHARS,
   MAX_OPTIONS,
   qualifiedName,
   validate,
@@ -537,6 +538,24 @@ test('a kind of host needs a usable name, declared once, and a label', () => {
     '"a server" is not a usable connection type name',
     'it declares the connection type prometheus more than once',
     'the connection type prometheus has no label',
+  ]);
+});
+
+test('a kind of host may bring a guide of a page and a check, and no more than that', () => {
+  assert.deepEqual(
+    validateConnectionTypes([
+      { name: 'anki', label: 'Anki', guide: '# Setting it up', checks: true },
+      { name: 'quiet', label: 'Quiet', guide: '   ' },
+    ]),
+    [],
+  );
+  const problems = validateConnectionTypes([
+    { name: 'long', label: 'Long', guide: 'x'.repeat(MAX_CONNECTION_GUIDE_CHARS + 1) },
+    { name: 'checked', label: 'Checked', check: 'version' },
+  ]);
+  assert.deepEqual(problems.map((one) => one.message), [
+    `the connection type long has a guide of ${MAX_CONNECTION_GUIDE_CHARS + 1} characters, and a guide is at most ${MAX_CONNECTION_GUIDE_CHARS}`,
+    'the connection type checked has a check that is not a function',
   ]);
 });
 

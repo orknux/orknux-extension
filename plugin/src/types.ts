@@ -105,6 +105,38 @@ export interface OrknuxConnectionTypeDeclaration {
   description?: string;
   /** What the URL box shows before anything is typed, e.g. `https://prometheus.example.com`. */
   urlPlaceholder?: string;
+  /**
+   * What to know while setting one up, as markdown, shown on the connection
+   * page for this kind: what to install, where the address comes from, what the
+   * credential is. At most 4000 characters; blank is the same as none.
+   *
+   * The description says what the kind is in a line on the type menu; this is
+   * the page somebody reads with the form open, which is where the question
+   * "what goes in this box" is actually asked.
+   */
+  guide?: string;
+  /**
+   * Whether a connection of this kind really is one, asked when somebody tests
+   * it.
+   *
+   * Without it the server can only ask whether the address answers, and a
+   * login page or any other service answers too - so a connection reads as
+   * working and fails on its first call. The plugin knows what its host says
+   * when it is the right host; this is where it says so.
+   *
+   * Handed the same connection a function's `connection` parameter of this
+   * kind receives - `url`, `authType`, `secret`, `headers` - and runs under the
+   * plugin's own capabilities, `NETWORK_REQUEST` for any request. A throw is a
+   * failed check, its message the reason.
+   */
+  check?: (connection: OrknuxConnectionHandle) => OrknuxConnectionCheck;
+}
+
+/** What a connection type's `check` answers: whether it is the host it claims, and a line saying so. */
+export interface OrknuxConnectionCheck {
+  ok: boolean;
+  /** What the connection page shows beside the result - "AnkiConnect 6", or why not. */
+  message?: string;
 }
 
 /**

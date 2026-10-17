@@ -295,6 +295,35 @@ it, and a model reads the same sentence a person does.
 
 At most `MAX_OBJECTS` shapes, each with at most `MAX_PROPERTIES` fields.
 
+## Connection types, for hosts of its own kind
+
+`connectionTypes()` declares a kind of host - a Prometheus, an AnkiConnect - so
+a workspace can hold several by name and a `connection` parameter of that kind
+receives its `url`, `authType`, `secret` and `headers`. Two members make the
+connection page do more than ask for a URL:
+
+```js
+connectionTypes() {
+  return [{
+    name: 'ankiconnect',
+    label: 'AnkiConnect',
+    urlPlaceholder: 'http://localhost:8765',
+    guide: '## Before you start\n\nInstall the add-on…',
+    check: (connection) => ({ ok: true, message: 'AnkiConnect 6' }),
+  }];
+}
+```
+
+- `guide` is markdown shown beside the form for that kind: what to install,
+  where the address comes from, what goes in the credential. At most
+  `MAX_CONNECTION_GUIDE_CHARS` characters.
+- `check` runs when somebody presses Test. Without one the server can only ask
+  whether the address answers, and a login page answers too; with one the
+  plugin asks the question only its host can answer. It is handed the
+  connection as a function receives it, runs under the plugin's own
+  capabilities, and answers `{ ok, message }`; a throw is a failed check whose
+  message is the reason.
+
 ## Permissions
 
 The sandbox hands out very little JavaScript, on purpose, and a bundle written

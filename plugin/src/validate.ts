@@ -8,6 +8,7 @@ import {
   LIBRARY_PATH,
   MAX_ACTIONS,
   MAX_ACTION_PARAMETERS,
+  MAX_CONNECTION_GUIDE_CHARS,
   MAX_CONNECTION_TYPES,
   MAX_FUNCTIONS,
   MAX_LIBRARIES,
@@ -146,6 +147,12 @@ export interface DeclaredConnectionType {
   label: string;
   description?: string | null;
   urlPlaceholder?: string | null;
+  /** The setup page shown on the connection form, as markdown. */
+  guide?: string | null;
+  /** Whether it offered a `check`, as inspected; a function does not cross. */
+  checks?: boolean;
+  /** The `check` itself, where a declaration is handed over as written rather than inspected. */
+  check?: unknown;
 }
 
 /** One instruction set a plugin brings, as it reaches the loader. */
@@ -280,9 +287,10 @@ export function validate(declared: Declaration): Problem[] {
  * The kinds of host a plugin declares, held to what the loader holds them to.
  *
  * The wording is the upload's, from `PluginDeclarations.validatedConnectionTypes`
- * and the bound `PluginRunner` reads under: a usable name declared once, and a
- * label. The name is half of the id a connection stores, so it has to be an
- * identifier that will not need renaming.
+ * and the bound `PluginRunner` reads under: a usable name declared once, a
+ * label, a guide no longer than a page, and a check that is a function. The
+ * name is half of the id a connection stores, so it has to be an identifier
+ * that will not need renaming.
  */
 export function validateConnectionTypes(declared: DeclaredConnectionType[]): Problem[] {
   const problems: Problem[] = [];
@@ -307,6 +315,16 @@ export function validateConnectionTypes(declared: DeclaredConnectionType[]): Pro
 
     const label = typeof kind.label === 'string' ? kind.label.trim() : '';
     if (label.length === 0) refuse(`the connection type ${name} has no label`);
+
+    const guide = typeof kind.guide === 'string' ? kind.guide.trim() : '';
+    if (guide.length > MAX_CONNECTION_GUIDE_CHARS) {
+      refuse(
+        `the connection type ${name} has a guide of ${guide.length} characters, and a guide is at most ${MAX_CONNECTION_GUIDE_CHARS}`,
+      );
+    }
+    if (kind.check !== undefined && typeof kind.check !== 'function') {
+      refuse(`the connection type ${name} has a check that is not a function`);
+    }
   }
   return problems;
 }

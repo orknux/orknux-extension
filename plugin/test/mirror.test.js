@@ -107,6 +107,9 @@ test('every optional field a plugin may declare survives being inspected', async
       label: 'A server',
       description: 'A kind of host with everything filled in.',
       urlPlaceholder: 'https://server.example.com',
+      /* Trimmed, as the loader keeps it; a check crosses as the fact that there is one. */
+      guide: '# Setting one up\n\nPoint it at the server.',
+      checks: true,
     },
   ]);
   assert.equal(seen.parameters.find((one) => one.name === 'host').connectionType, 'server');

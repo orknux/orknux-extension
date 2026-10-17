@@ -174,6 +174,13 @@ export const MAX_TYPE_PARAMETERS = 10;
 export const MAX_CONNECTION_TYPES = 20;
 
 /**
+ * How long the guide on a connection type's page may be, in characters.
+ * `MAX_CONNECTION_GUIDE_CHARS` in `PluginDeclarations`. Room for a setup page,
+ * not for a manual: a page a person reads while filling in a form.
+ */
+export const MAX_CONNECTION_GUIDE_CHARS = 4000;
+
+/**
  * Workflow actions a plugin may declare. Every one is a row in the editor's
  * action picker for every workspace, and a plugin offering more than this is a
  * menu rather than a plugin. `MAX_ACTIONS` in `PluginRunner`.
