@@ -1,0 +1,15 @@
+{
+  "$schema": "https://orknux.ai/marketplace/plugin.schema.json",
+  "key": "anki",
+  "name": "Anki",
+  "author": "Orknux",
+  "tags": [
+    "learning",
+    "flashcards",
+    "productivity"
+  ],
+  "summary": "Turn what was read into flashcards, and ask what is due - through AnkiConnect.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "descriptionPath": "README.md"
+}

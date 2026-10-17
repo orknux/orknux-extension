@@ -3158,6 +3158,163 @@ test('prometheus asks whichever server the call names', async () => {
   }
 });
 
+test('the anki plugin declares what the server would accept', async () => {
+  const inspected = await inspect(shipped('anki'));
+
+  assert.equal(inspected.id, 'anki');
+  assert.deepEqual(validate(inspected), []);
+
+  /* A connection kind of its own, with the page to set one up and a check that it is AnkiConnect. */
+  assert.equal(inspected.connectionTypes.length, 1);
+  const [kind] = inspected.connectionTypes;
+  assert.equal(kind.name, 'ankiconnect');
+  assert.equal(kind.label, 'AnkiConnect');
+  assert.equal(kind.urlPlaceholder, 'http://localhost:8765');
+  assert.equal(kind.checks, true);
+  assert.match(kind.guide, /2055492159/);
+  assert.match(kind.guide, /webBindAddress/);
+  assert.ok(kind.guide.length <= 4000, `the guide is ${kind.guide.length} characters`);
+
+  for (const declared of inspected.functions) {
+    assert.deepEqual(
+      [declared.params[0].name, declared.params[0].type],
+      ['anki', 'connection'],
+      `${declared.name} takes the Anki first`,
+    );
+  }
+  assert.deepEqual(inspected.permissions, []);
+  assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
+  assert.deepEqual(
+    inspected.functions.map((declared) => declared.name),
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'dueCards', 'sync'],
+  );
+  assert.deepEqual(
+    inspected.tools.map((declared) => declared.name),
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'dueCards', 'sync'],
+  );
+  assert.deepEqual(inspected.skills.map((skill) => skill.id), ['anki-cards']);
+});
+
+test('anki tells AnkiConnect from anything else answering at the address', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const [kind] = Object.create(Anki.prototype).connectionTypes();
+  const connection = {
+    id: 1, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://anki.lan:8765', authType: 'NONE', headers: {},
+  };
+  const answering = (status, json, body = JSON.stringify(json)) => () => ({ status, headers: {}, body, json });
+
+  const front = globalThis.orknux.http.post;
+  try {
+    /* AnkiConnect itself: its version, and the decks behind it. */
+    const asked = [];
+    globalThis.orknux.http.post = (where, body) => {
+      asked.push(body);
+      return body.action === 'version'
+        ? answering(200, { result: 6, error: null })()
+        : answering(200, { result: ['Default', 'Spanish'], error: null })();
+    };
+    assert.deepEqual(kind.check(connection), { ok: true, message: 'AnkiConnect 6, 2 decks' });
+    assert.deepEqual(
+      asked.map((one) => [one.action, one.version, one.key]),
+      [['version', 6, undefined], ['deckNames', 6, undefined]],
+    );
+
+    /* A page answering 200 is not AnkiConnect, however well it answered. */
+    globalThis.orknux.http.post = answering(200, undefined, '<!doctype html><title>Router</title>');
+    assert.throws(
+      () => kind.check(connection),
+      /http:\/\/anki\.lan:8765 is not AnkiConnect: it answered with an HTML page \(status 200\)/,
+    );
+
+    /* Nor is a JSON service without AnkiConnect's envelope. */
+    globalThis.orknux.http.post = answering(200, { status: 'ok', version: '2.1' });
+    assert.throws(() => kind.check(connection), /is not AnkiConnect: it answered with JSON with status, version/);
+
+    /* And a version that is not a number is not one either. */
+    globalThis.orknux.http.post = answering(200, { result: 'six', error: null });
+    assert.deepEqual(kind.check(connection), {
+      ok: false,
+      message: 'http://anki.lan:8765 is not AnkiConnect: its version is "six"',
+    });
+
+    /* An AnkiConnect with a key set refuses the deck list without it - which is what makes a wrong key fail Test. */
+    globalThis.orknux.http.post = (where, body) => body.action === 'version'
+      ? answering(200, { result: 6, error: null })()
+      : answering(200, { result: null, error: 'valid api key must be provided' })();
+    assert.throws(() => kind.check(connection), /AnkiConnect refused the API key/);
+
+    /* Unreachable is said as that, with the likeliest reason. */
+    globalThis.orknux.http.post = () => ({ error: 'Connection refused' });
+    assert.throws(
+      () => kind.check(connection),
+      /could not reach AnkiConnect at http:\/\/anki\.lan:8765: Connection refused - is Anki running\?/,
+    );
+  } finally {
+    globalThis.orknux.http.post = front;
+  }
+});
+
+test('anki puts the key in the body, and refuses a duplicate in words', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const functions = Object.create(Anki.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
+  const keyed = {
+    id: 2, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://localhost:8765',
+    authType: 'API_KEY', secret: 's3cret', headers: { 'X-API-Key': 's3cret' },
+  };
+
+  assert.throws(() => call('decks').run(null), /no AnkiConnect connection was given/);
+  assert.throws(() => call('decks').run(7), /not an AnkiConnect connection of this plugin's kind/);
+
+  const asked = [];
+  const front = globalThis.orknux.http.post;
+  try {
+    globalThis.orknux.http.post = (where, body) => {
+      asked.push(body);
+      const result = { modelFieldNames: ['Text', 'Back Extra'], createDeck: 1, addNote: 1700000000000 }[body.action];
+      const json = { result, error: null };
+      return { status: 200, headers: {}, body: JSON.stringify(json), json };
+    };
+    const added = call('addNote').run(keyed, 'Biology', 'Plants take in {{c1::carbon dioxide}}.', '', 'Cloze', ['school'], {});
+    assert.deepEqual(added, { noteId: 1700000000000 });
+
+    /* The key goes in every body, and front lands in the note type's first field, whatever it is called. */
+    assert.ok(asked.every((body) => body.key === 's3cret'));
+    const note = asked.find((body) => body.action === 'addNote').params.note;
+    assert.deepEqual(note.fields, { Text: 'Plants take in {{c1::carbon dioxide}}.' });
+    assert.equal(note.modelName, 'Cloze');
+    assert.deepEqual(note.tags, ['school']);
+
+    globalThis.orknux.http.post = (where, body) => {
+      const json = body.action === 'addNote'
+        ? { result: null, error: 'cannot create note because it is a duplicate' }
+        : body.action === 'multi'
+          ? {
+            result: [{ result: 11, error: null }, { result: null, error: 'cannot create note because it is a duplicate' }],
+            error: null,
+          }
+          : { result: 1, error: null };
+      return { status: 200, headers: {}, body: JSON.stringify(json), json };
+    };
+    assert.throws(
+      () => call('addNote').run(keyed, 'Biology', 'Which gas?', 'CO2', 'Basic', [], { Front: 'Which gas?', Back: 'CO2' }),
+      /Anki already has a note with this first field in Biology - it was not added a second time/,
+    );
+
+    /* Several at once: each one added or skipped on its own. */
+    const batch = call('addBasicNotes').run(keyed, 'Biology', [{ front: 'One', back: '1' }, { front: 'Two', back: '2' }], []);
+    assert.deepEqual(batch, {
+      added: 1,
+      noteIds: [11],
+      skipped: [{ front: 'Two', reason: 'Anki already has a note with this first field in Biology - it was not added a second time' }],
+    });
+  } finally {
+    globalThis.orknux.http.post = front;
+  }
+});
+
 test('a slack upload without a bot token is a thrown sentence, not a request', async () => {
   /*
    * The token is optional at load so the tokenless surface can stand alone —
@@ -3297,6 +3454,7 @@ test('the sweeps below are sweeping something', () => {
    * whole-repository invariants to nothing at all.
    */
   assert.deepEqual(everyPlugin, [
+    'anki',
     'confluence',
     'github',
     'jenkins',

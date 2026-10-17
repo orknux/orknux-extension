@@ -65,6 +65,7 @@ const ATTRIBUTION = 'Font Awesome Free (https://fontawesome.com) — icons licen
 
 /** Which plugin wears which mark, and out of which collection. */
 const BRANDED = [
+  { plugin: 'anki', from: 'simple', icon: 'siAnki' },
   { plugin: 'github', from: 'simple', icon: 'siGithub' },
   { plugin: 'confluence', from: 'simple', icon: 'siConfluence' },
   { plugin: 'jira', from: 'simple', icon: 'siJira' },
