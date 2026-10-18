@@ -205,6 +205,76 @@ function deckQuery(deck) {
 }
 
 /**
+ * What a card shows once turned over, without the question above it.
+ *
+ * Anki renders the back as the front again, a rule, then the answer - the
+ * `{{FrontSide}}<hr id=answer>` of every stock note type - so read whole it
+ * repeats the question, and a model checking somebody's answer against it
+ * reads the question as part of what was expected. Where there is no rule, a
+ * note type of the person's own, the whole back is the answer.
+ */
+function answerOf(html) {
+  const parts = String(html ?? '').split(/<hr\s+id\s*=\s*["']?answer["']?\s*\/?>/i);
+  return plain(parts[parts.length - 1]);
+}
+
+/** Card ids as numbers, said as a sentence when there are none or one is not an id. */
+function cardIdsOf(cardIds) {
+  if (!Array.isArray(cardIds) || cardIds.length === 0) {
+    throw new Error('no cardIds were given - dueCards answers the id of each card it lists');
+  }
+  if (cardIds.length > MOST) {
+    throw new Error(`that is ${cardIds.length} cards, and one call takes at most ${MOST}`);
+  }
+  return cardIds.map((one) => {
+    const id = Number(one);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new Error(`${JSON.stringify(one)} is not a card id - dueCards answers the id of each card it lists`);
+    }
+    return id;
+  });
+}
+
+/**
+ * cardsInfo for these ids, keyed by id, with the ones Anki does not have.
+ *
+ * AnkiConnect answers an empty object for an id it does not have rather than an
+ * error, while `areDue` answers one in words nobody could act on ("list index
+ * out of range") - so every call that changes a card asks this first and says
+ * which ids were not cards.
+ */
+function cardsKnown(connection, ids) {
+  const infos = ask(connection, 'cardsInfo', { cards: ids });
+  const known = new Map();
+  (Array.isArray(infos) ? infos : []).forEach((info) => {
+    if (typeof at(info, 'cardId') === 'number') {
+      known.set(info.cardId, info);
+    }
+  });
+  return { known, missing: ids.filter((id) => !known.has(id)) };
+}
+
+/** A card as AnkiConnect's cardsInfo spells one, read into this plugin's Card. */
+function cardOf(info) {
+  const next = at(info, 'nextReviews');
+  return {
+    cardId: at(info, 'cardId'),
+    noteId: at(info, 'note'),
+    deck: at(info, 'deckName'),
+    question: plain(at(info, 'question')),
+    answer: answerOf(at(info, 'answer')),
+    // Queue -1 is Anki's own word for suspended; buried cards are -2 and -3, and come back by themselves.
+    suspended: at(info, 'queue') === -1,
+    lapses: at(info, 'lapses') ?? 0,
+    // Anki wraps each interval in Unicode direction isolates for its own buttons; a model reads them as noise.
+    nextReviews: Array.isArray(next) ? next.map((one) => String(one).replace(/[⁦-⁩]/g, '')) : [],
+  };
+}
+
+/** The four buttons, in the words Anki puts on them. */
+const EASES = { 1: 'Again', 2: 'Hard', 3: 'Good', 4: 'Easy' };
+
+/**
  * The fields of a new note: a map where one was given, otherwise front and back
  * put into the note type's first two fields.
  *
@@ -382,6 +452,11 @@ export default class Anki extends OrknuxPlugin {
           { name: 'noteId', kind: 'number' },
           { name: 'deck', kind: 'string' },
           { name: 'question', kind: 'string', description: 'What the card asks, as text.' },
+          {
+            name: 'answer',
+            kind: 'string',
+            description: 'What the back says, as text, without the question repeated. Not to be read out before the person answers.',
+          },
         ],
       }),
       new OrknuxObject({
@@ -390,6 +465,58 @@ export default class Anki extends OrknuxPlugin {
         properties: [
           { name: 'count', kind: 'number', description: 'How many are due, before limit capped the list.' },
           { name: 'cards', kind: 'array', of: 'DueCard', description: 'Capped by limit.' },
+        ],
+      }),
+      new OrknuxObject({
+        name: 'Card',
+        description: 'A card: both sides, where it lives, and what each answer would do to it.',
+        properties: [
+          { name: 'cardId', kind: 'number' },
+          { name: 'noteId', kind: 'number', description: 'The note it is made from - updateNote changes it.' },
+          { name: 'deck', kind: 'string' },
+          { name: 'question', kind: 'string', description: 'What the card asks, as text.' },
+          { name: 'answer', kind: 'string', description: 'What the back says, as text, without the question repeated.' },
+          { name: 'suspended', kind: 'boolean', description: 'A suspended card is never due until it is unsuspended.' },
+          { name: 'lapses', kind: 'number', description: 'How many times it was forgotten after being learnt.' },
+          {
+            name: 'nextReviews',
+            kind: 'array',
+            of: 'string',
+            description: 'When each answer would show it next - Again, Hard, Good, Easy in that order: 10m, 2d, 1.7y.',
+          },
+        ],
+      }),
+      new OrknuxObject({
+        name: 'Cards',
+        description: 'The cards asked for.',
+        properties: [
+          { name: 'cards', kind: 'array', of: 'Card', description: 'In the order they were asked for.' },
+          { name: 'missing', kind: 'array', of: 'number', description: 'Ids Anki has no card for.' },
+        ],
+      }),
+      new OrknuxObject({
+        name: 'SkippedCard',
+        description: 'A card that was not answered, and why.',
+        properties: [
+          { name: 'cardId', kind: 'number' },
+          { name: 'reason', kind: 'string', description: 'Not due, suspended, not a card, an ease that is not 1 to 4.' },
+        ],
+      }),
+      new OrknuxObject({
+        name: 'AnsweredCards',
+        description: 'What answering cards came to.',
+        properties: [
+          { name: 'answered', kind: 'number' },
+          { name: 'cardIds', kind: 'array', of: 'number', description: 'The cards answered, now scheduled again.' },
+          { name: 'skipped', kind: 'array', of: 'SkippedCard', description: 'Each one not answered, with the reason.' },
+        ],
+      }),
+      new OrknuxObject({
+        name: 'SuspendedCards',
+        description: 'The cards a suspend or an unsuspend acted on.',
+        properties: [
+          { name: 'cardIds', kind: 'array', of: 'number', description: 'The cards acted on.' },
+          { name: 'missing', kind: 'array', of: 'number', description: 'Ids Anki has no card for, left alone.' },
         ],
       }),
     ];
@@ -405,6 +532,10 @@ export default class Anki extends OrknuxPlugin {
       new OrknuxFunctionTool({ function: 'addBasicNotes' }),
       new OrknuxFunctionTool({ function: 'updateNote' }),
       new OrknuxFunctionTool({ function: 'dueCards' }),
+      new OrknuxFunctionTool({ function: 'cards' }),
+      new OrknuxFunctionTool({ function: 'answerCards' }),
+      new OrknuxFunctionTool({ function: 'suspendCards' }),
+      new OrknuxFunctionTool({ function: 'unsuspendCards' }),
       new OrknuxFunctionTool({ function: 'sync' }),
     ];
   }
@@ -480,6 +611,61 @@ keeps what it has, so to add a line to the back, pass the whole new back.
 Tag what came from one conversation or source with one tag, so the person can
 find and delete the batch if it is not what they wanted. Tell them how many
 cards were added and to which deck.`,
+      }),
+      new OrknuxSkill({
+        id: 'anki-review',
+        name: 'Taking a person through their due Anki cards',
+        description:
+          'How to run a review with somebody - asking each card, judging the answer, and recording it in Anki so it is scheduled.',
+        content: `# Taking a person through their due Anki cards
+
+A review only counts once Anki has been told how each card went. Asking the
+questions and grading them in the conversation changes nothing: the cards stay
+due and come back tomorrow exactly as they were.
+
+## Start with what is due
+
+\`anki_dueCards\` with \`{"anki": 3, "deck": "Spanish"}\` lists the due cards,
+each with its \`cardId\`, its question and its answer. Leave the deck out to
+review everything due.
+
+## One card at a time
+
+1. Ask the question - the question only. The answer is there so you can judge
+   what the person says; reading it out first spoils the card.
+2. Let them answer, then compare it with the back. Be fair about wording: the
+   meaning is what counts, not the exact phrase.
+3. Tell them the answer, and how you graded it.
+
+## Grading
+
+- **1 Again** - wrong, or they could not remember.
+- **2 Hard** - right, but only after a real struggle or with a hint.
+- **3 Good** - right after some thought. Most correct answers are this.
+- **4 Easy** - right at once, without effort.
+
+When they grade themselves, use their grade.
+
+## Recording it
+
+Record the answers as you go, or a few at a time - not only at the end, where a
+conversation that stops early loses the whole session:
+
+\`anki_answerCards\` with
+\`{"anki": 3, "answers": [{"cardId": 1700000000001, "ease": 3}, {"cardId": 1700000000002, "ease": 1}]}\`
+
+Each card is answered once. A card that comes back skipped says why - not due,
+suspended, not a card - and is not to be retried with another id. A card
+answered Again is usually due again within minutes, so \`anki_dueCards\` lists
+it once more before the session is over.
+
+## A card that is wrong or unwanted
+
+If the card itself is wrong, correct it with \`anki_updateNote\` using its
+\`noteId\`. If the person wants to stop seeing it, \`anki_suspendCards\` with its
+\`cardId\` - it keeps its history and comes back with \`anki_unsuspendCards\`.
+
+At the end, say how many cards were reviewed and how many were forgotten.`,
       }),
     ];
   }
@@ -746,7 +932,8 @@ cards were added and to which deck.`,
         name: 'dueCards',
         description:
           'Says how many cards are due for review, in one deck or across all of them when deck is left out, and ' +
-          'what the first of them ask. Leave limit out for the first 20.',
+          'the first of them, each with the cardId answerCards takes and both sides - the answer is for checking ' +
+          'what the person says, not for reading out first. Leave limit out for the first 20.',
         params: [
           {
             name: 'anki',
@@ -770,8 +957,167 @@ cards were added and to which deck.`,
               noteId: at(card, 'note'),
               deck: at(card, 'deckName'),
               question: plain(at(card, 'question')),
+              answer: answerOf(at(card, 'answer')),
             })),
           };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'cards',
+        description:
+          'Reads cards by their cardId - dueCards answers it: both sides as text, the deck, whether it is ' +
+          'suspended, and when each of the four answers would show it next. For checking what somebody said ' +
+          'against the back before answering the card.',
+        params: [
+          {
+            name: 'anki',
+            type: 'connection',
+            description: 'Which Anki to ask: an AnkiConnect connection, which carries its address and key.',
+          },
+          { name: 'cardIds', type: 'array', description: 'Card ids, as numbers: [1700000000001, 1700000000002].' },
+        ],
+        returnType: 'Cards',
+        run: (connection, cardIds) => {
+          const ids = cardIdsOf(cardIds);
+          const { known, missing } = cardsKnown(connection, ids);
+          return { cards: ids.filter((id) => known.has(id)).map((id) => cardOf(known.get(id))), missing };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'answerCards',
+        description:
+          'Answers cards in a review, as pressing a button under a card in Anki does, and schedules each one ' +
+          'again from that answer. answers is a list of {cardId, ease}; ease is 1 Again - forgotten or wrong, ' +
+          '2 Hard - recalled with real difficulty, 3 Good - recalled after some thought, 4 Easy - recalled at ' +
+          'once. Only a card that is due is answered: one not due, suspended or not a card is skipped with the ' +
+          'reason, and the rest are answered. An answer cannot be undone from here.',
+        params: [
+          {
+            name: 'anki',
+            type: 'connection',
+            description: 'Which Anki to answer in: an AnkiConnect connection, which carries its address and key.',
+          },
+          {
+            name: 'answers',
+            type: 'array',
+            description: 'One {cardId, ease} per card, ease 1 to 4: [{"cardId": 1700000000001, "ease": 3}].',
+          },
+        ],
+        returnType: 'AnsweredCards',
+        run: (connection, answers) => {
+          if (!Array.isArray(answers) || answers.length === 0) {
+            throw new Error('there are no answers - answers is a list of {cardId, ease}, ease 1 Again to 4 Easy');
+          }
+          if (answers.length > MOST) {
+            throw new Error(`that is ${answers.length} answers, and one call takes at most ${MOST}`);
+          }
+          const skipped = [];
+          const wanted = [];
+          const seen = new Set();
+          for (const one of answers) {
+            const cardId = Number(at(one, 'cardId'));
+            const ease = Number(at(one, 'ease'));
+            if (!Number.isInteger(cardId) || cardId <= 0) {
+              skipped.push({ cardId: at(one, 'cardId'), reason: 'not a card id - dueCards answers the id of each card' });
+            } else if (!Number.isInteger(ease) || !(ease in EASES)) {
+              skipped.push({ cardId, reason: `ease ${JSON.stringify(at(one, 'ease'))} is not 1 Again, 2 Hard, 3 Good or 4 Easy` });
+            } else if (seen.has(cardId)) {
+              /* Twice in one call would be two reviews of one card, and the second is never what was meant. */
+              skipped.push({ cardId, reason: 'answered earlier in the same call' });
+            } else {
+              seen.add(cardId);
+              wanted.push({ cardId, ease });
+            }
+          }
+          const known = wanted.length === 0 ? new Map() : cardsKnown(connection, wanted.map((one) => one.cardId)).known;
+          const present = [];
+          for (const one of wanted) {
+            const info = known.get(one.cardId);
+            if (info === undefined) {
+              skipped.push({ cardId: one.cardId, reason: 'Anki has no such card' });
+            } else if (at(info, 'queue') === -1) {
+              skipped.push({ cardId: one.cardId, reason: 'suspended - unsuspendCards brings it back' });
+            } else {
+              present.push(one);
+            }
+          }
+          /*
+           * Only what is due. AnkiConnect answers any card it is handed, and a
+           * card answered early is pushed out by an interval it did not earn -
+           * so an id remembered from yesterday, or one misread off a list,
+           * would quietly reschedule a card the person was never shown.
+           */
+          const due = present.length === 0 ? [] : ask(connection, 'areDue', { cards: present.map((one) => one.cardId) });
+          const answering = present.filter((one, index) => {
+            if (Array.isArray(due) && due[index] === true) {
+              return true;
+            }
+            skipped.push({ cardId: one.cardId, reason: 'not due yet - dueCards lists the cards that are' });
+            return false;
+          });
+          const done = answering.length === 0 ? [] : ask(connection, 'answerCards', { answers: answering });
+          const cardIds = [];
+          answering.forEach((one, index) => {
+            if (Array.isArray(done) && done[index] === true) {
+              cardIds.push(one.cardId);
+            } else {
+              skipped.push({ cardId: one.cardId, reason: 'Anki did not answer it' });
+            }
+          });
+          return { answered: cardIds.length, cardIds, skipped };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'suspendCards',
+        description:
+          'Suspends cards by their cardId, as Anki\'s Suspend does: a suspended card keeps its history and is ' +
+          'never due until it is unsuspended. For a card the person no longer wants to study, or one that is ' +
+          'wrong and should wait until it is fixed.',
+        params: [
+          {
+            name: 'anki',
+            type: 'connection',
+            description: 'Which Anki to change: an AnkiConnect connection, which carries its address and key.',
+          },
+          { name: 'cardIds', type: 'array', description: 'Card ids, as numbers: [1700000000001].' },
+        ],
+        returnType: 'SuspendedCards',
+        run: (connection, cardIds) => {
+          const ids = cardIdsOf(cardIds);
+          const { known, missing } = cardsKnown(connection, ids);
+          const acted = ids.filter((id) => known.has(id));
+          if (acted.length > 0) {
+            ask(connection, 'suspend', { cards: acted });
+          }
+          return { cardIds: acted, missing };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'unsuspendCards',
+        description:
+          'Unsuspends cards by their cardId - the ids suspendCards answered - so they are scheduled again from ' +
+          'where they were left.',
+        params: [
+          {
+            name: 'anki',
+            type: 'connection',
+            description: 'Which Anki to change: an AnkiConnect connection, which carries its address and key.',
+          },
+          { name: 'cardIds', type: 'array', description: 'Card ids, as numbers: [1700000000001].' },
+        ],
+        returnType: 'SuspendedCards',
+        run: (connection, cardIds) => {
+          const ids = cardIdsOf(cardIds);
+          const { known, missing } = cardsKnown(connection, ids);
+          const acted = ids.filter((id) => known.has(id));
+          if (acted.length > 0) {
+            ask(connection, 'unsuspend', { cards: acted });
+          }
+          return { cardIds: acted, missing };
         },
       }),
 

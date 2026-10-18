@@ -3188,13 +3188,13 @@ test('the anki plugin declares what the server would accept', async () => {
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'sync'],
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'cards', 'answerCards', 'suspendCards', 'unsuspendCards', 'sync'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'sync'],
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'cards', 'answerCards', 'suspendCards', 'unsuspendCards', 'sync'],
   );
-  assert.deepEqual(inspected.skills.map((skill) => skill.id), ['anki-cards']);
+  assert.deepEqual(inspected.skills.map((skill) => skill.id), ['anki-cards', 'anki-review']);
 });
 
 test('anki tells AnkiConnect from anything else answering at the address', async () => {
@@ -3354,6 +3354,142 @@ test('anki changes a note it already has, only where it was asked to', async () 
     assert.throws(() => update.run(anki, 99, 'x', '', {}, []), /Anki has no note 99/);
     assert.throws(() => update.run(anki, 17, '', '', {}, []), /there is nothing to change/);
     assert.throws(() => update.run(anki, 17, '', '', { Extra: 'x' }, []), /a Basic note has no field called Extra - it has Front, Back/);
+  } finally {
+    globalThis.orknux.http.post = front;
+  }
+});
+
+/*
+ * A stand-in AnkiConnect holding three cards: 1 due, 2 not due yet, 3
+ * suspended. What it answers for an id it does not have is what the real one
+ * answers - an empty object from cardsInfo, and an unreadable error from
+ * areDue - so the plugin is held to asking cardsInfo first.
+ */
+function reviewDesk() {
+  const style = '<style>.card { color: black; }</style>';
+  const cards = new Map([
+    [1, { queue: 2, due: true, question: 'cesspool', back: 'szambo<br>bagno' }],
+    [2, { queue: 2, due: false, question: 'ameliorate', back: 'poprawić' }],
+    [3, { queue: -1, due: false, question: 'gist', back: 'sedno' }],
+  ]);
+  const asked = [];
+  const post = (where, body) => {
+    asked.push(body);
+    const ids = body.params?.cards ?? [];
+    let json;
+    if (body.action === 'cardsInfo') {
+      json = {
+        result: ids.map((id) => {
+          const card = cards.get(id);
+          return card === undefined ? {} : {
+            cardId: id, note: id * 10, deckName: 'English', queue: card.queue, lapses: 3,
+            question: `${style}${card.question}`,
+            answer: `${style}${card.question}\n\n<hr id=answer>\n\n${card.back}`,
+            nextReviews: ['⁨10⁩m', '⁨2⁩d', '⁨1.7⁩y', '⁨4.5⁩y'],
+          };
+        }),
+        error: null,
+      };
+    } else if (body.action === 'areDue') {
+      json = ids.every((id) => cards.has(id))
+        ? { result: ids.map((id) => cards.get(id).due), error: null }
+        : { result: null, error: 'list index out of range' };
+    } else if (body.action === 'answerCards') {
+      json = { result: body.params.answers.map((one) => cards.has(one.cardId)), error: null };
+    } else if (body.action === 'findCards') {
+      json = { result: [1], error: null };
+    } else {
+      json = { result: true, error: null };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify(json), json };
+  };
+  return { asked, post };
+}
+
+test('anki reads both sides of a card, and the answer without the question above it', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const functions = Object.create(Anki.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
+  const anki = { id: 2, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://localhost:8765', authType: 'NONE', headers: {} };
+  const desk = reviewDesk();
+  const front = globalThis.orknux.http.post;
+  try {
+    globalThis.orknux.http.post = desk.post;
+    assert.deepEqual(call('cards').run(anki, [1, 3, 99]), {
+      cards: [
+        {
+          cardId: 1, noteId: 10, deck: 'English', question: 'cesspool', answer: 'szambo\nbagno',
+          suspended: false, lapses: 3, nextReviews: ['10m', '2d', '1.7y', '4.5y'],
+        },
+        {
+          cardId: 3, noteId: 30, deck: 'English', question: 'gist', answer: 'sedno',
+          suspended: true, lapses: 3, nextReviews: ['10m', '2d', '1.7y', '4.5y'],
+        },
+      ],
+      missing: [99],
+    });
+    /* The due list carries the answer too, so a review needs no second call per card. */
+    assert.deepEqual(call('dueCards').run(anki, '', 20).cards, [
+      { cardId: 1, noteId: 10, deck: 'English', question: 'cesspool', answer: 'szambo\nbagno' },
+    ]);
+    assert.throws(() => call('cards').run(anki, []), /no cardIds were given/);
+    assert.throws(() => call('cards').run(anki, ['abc']), /"abc" is not a card id/);
+  } finally {
+    globalThis.orknux.http.post = front;
+  }
+});
+
+test('anki answers only the due cards it was given, and says why it skipped the rest', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const functions = Object.create(Anki.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
+  const anki = { id: 2, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://localhost:8765', authType: 'NONE', headers: {} };
+  const desk = reviewDesk();
+  const front = globalThis.orknux.http.post;
+  try {
+    globalThis.orknux.http.post = desk.post;
+    const result = call('answerCards').run(anki, [
+      { cardId: 1, ease: 3 },
+      { cardId: 2, ease: 4 },
+      { cardId: 3, ease: 1 },
+      { cardId: 99, ease: 2 },
+      { cardId: 1, ease: 1 },
+      { cardId: '1', ease: 5 },
+      { cardId: 'x', ease: 3 },
+    ]);
+    assert.deepEqual(result, {
+      answered: 1,
+      cardIds: [1],
+      skipped: [
+        { cardId: 1, reason: 'answered earlier in the same call' },
+        { cardId: 1, reason: 'ease 5 is not 1 Again, 2 Hard, 3 Good or 4 Easy' },
+        { cardId: 'x', reason: 'not a card id - dueCards answers the id of each card' },
+        { cardId: 3, reason: 'suspended - unsuspendCards brings it back' },
+        { cardId: 99, reason: 'Anki has no such card' },
+        { cardId: 2, reason: 'not due yet - dueCards lists the cards that are' },
+      ],
+    });
+    /* AnkiConnect is only ever handed the due card, with the ease as given - and areDue never an id it lacks. */
+    assert.deepEqual(desk.asked.find((body) => body.action === 'areDue').params, { cards: [1, 2] });
+    assert.deepEqual(
+      desk.asked.filter((body) => body.action === 'answerCards').map((body) => body.params),
+      [{ answers: [{ cardId: 1, ease: 3 }] }],
+    );
+
+    /* Nothing answerable sends no answerCards at all. */
+    desk.asked.length = 0;
+    assert.deepEqual(call('answerCards').run(anki, [{ cardId: 2, ease: 3 }]).answered, 0);
+    assert.ok(!desk.asked.some((body) => body.action === 'answerCards'));
+    assert.throws(() => call('answerCards').run(anki, []), /there are no answers/);
+
+    /* Suspending acts on the cards Anki has and names the ones it does not. */
+    desk.asked.length = 0;
+    assert.deepEqual(call('suspendCards').run(anki, [2, 99]), { cardIds: [2], missing: [99] });
+    assert.deepEqual(desk.asked.find((body) => body.action === 'suspend').params, { cards: [2] });
+    assert.deepEqual(call('unsuspendCards').run(anki, [3]), { cardIds: [3], missing: [] });
+    assert.deepEqual(desk.asked.find((body) => body.action === 'unsuspend').params, { cards: [3] });
   } finally {
     globalThis.orknux.http.post = front;
   }

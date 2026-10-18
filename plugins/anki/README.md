@@ -23,9 +23,15 @@ list in a workflow, passed by id from an agent:
 - `addNote` - one note, Basic or Cloze or a note type of your own; a duplicate
   is refused rather than added twice.
 - `addBasicNotes` - several at once, each added or skipped with the reason.
-- `dueCards` - how many cards are due, and what they ask.
+- `dueCards` - how many cards are due, with both sides of each.
+- `cards` - cards by id: both sides, and when each answer would show one next.
+- `answerCards` - record how each card went, 1 Again to 4 Easy, as Anki's
+  buttons do. Only a due card is answered; anything else is skipped with the
+  reason.
+- `suspendCards`, `unsuspendCards` - set a card aside, and bring it back.
 - `sync` - with AnkiWeb, so new cards reach your phone.
 
-All of them are offered to agents as tools, with a skill on writing cards worth
-reviewing. Calls run through the server under `NETWORK_REQUEST`, so the
+All of them are offered to agents as tools, with two skills: writing cards worth
+reviewing, and taking somebody through their due cards so that each answer is
+recorded in Anki. Calls run through the server under `NETWORK_REQUEST`, so the
 installation's proxy rules govern where they may go.
