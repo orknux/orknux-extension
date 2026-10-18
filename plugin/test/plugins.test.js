@@ -3188,11 +3188,11 @@ test('the anki plugin declares what the server would accept', async () => {
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'dueCards', 'sync'],
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'sync'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'dueCards', 'sync'],
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'sync'],
   );
   assert.deepEqual(inspected.skills.map((skill) => skill.id), ['anki-cards']);
 });
@@ -3312,6 +3312,48 @@ test('anki puts the key in the body, and refuses a duplicate in words', async ()
       noteIds: [11],
       skipped: [{ front: 'Two', reason: 'Anki already has a note with this first field in Biology - it was not added a second time' }],
     });
+  } finally {
+    globalThis.orknux.http.post = front;
+  }
+});
+
+test('anki changes a note it already has, only where it was asked to', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const update = Object.create(Anki.prototype).functions().find((one) => one.name === 'updateNote');
+  const anki = {
+    id: 2, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://localhost:8765', authType: 'NONE', headers: {},
+  };
+  let back = 'made better; improved';
+  const info = () => [{
+    noteId: 17, modelName: 'Basic', tags: ['english'],
+    fields: { Back: { value: back, order: 1 }, Front: { value: 'ameliorated', order: 0 } },
+  }];
+
+  const asked = [];
+  const front = globalThis.orknux.http.post;
+  try {
+    globalThis.orknux.http.post = (where, body) => {
+      asked.push(body);
+      if (body.action === 'updateNoteFields') back = body.params.note.fields.Back ?? back;
+      const result = body.action === 'notesInfo' ? (body.params.notes[0] === 17 ? info() : [{}]) : null;
+      const json = { result, error: null };
+      return { status: 200, headers: {}, body: JSON.stringify(json), json };
+    };
+
+    /* The back alone: the front is not sent, so it keeps what it has. */
+    const changed = update.run(anki, 17, '', 'made better; improved<br>PL: poprawiony', {}, ['polish']);
+    const sent = asked.find((body) => body.action === 'updateNoteFields').params.note;
+    assert.deepEqual(sent, { id: 17, fields: { Back: 'made better; improved<br>PL: poprawiony' } });
+    assert.deepEqual(asked.find((body) => body.action === 'addTags').params, { notes: [17], tags: 'polish' });
+    assert.deepEqual(changed.fields, [
+      { name: 'Front', value: 'ameliorated' },
+      { name: 'Back', value: 'made better; improved<br>PL: poprawiony' },
+    ]);
+
+    assert.throws(() => update.run(anki, 99, 'x', '', {}, []), /Anki has no note 99/);
+    assert.throws(() => update.run(anki, 17, '', '', {}, []), /there is nothing to change/);
+    assert.throws(() => update.run(anki, 17, '', '', { Extra: 'x' }, []), /a Basic note has no field called Extra - it has Front, Back/);
   } finally {
     globalThis.orknux.http.post = front;
   }

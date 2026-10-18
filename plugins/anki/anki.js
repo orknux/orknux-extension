@@ -403,6 +403,7 @@ export default class Anki extends OrknuxPlugin {
       new OrknuxFunctionTool({ function: 'findNotes' }),
       new OrknuxFunctionTool({ function: 'addNote' }),
       new OrknuxFunctionTool({ function: 'addBasicNotes' }),
+      new OrknuxFunctionTool({ function: 'updateNote' }),
       new OrknuxFunctionTool({ function: 'dueCards' }),
       new OrknuxFunctionTool({ function: 'sync' }),
     ];
@@ -465,6 +466,16 @@ One cloze card:
 
 A note that is a duplicate comes back refused, not added twice - report it to
 the person rather than rewording it to slip past the check.
+
+## Changing a card already made
+
+To add to a card - a translation, an example, a correction - change it rather
+than adding a second one: find it with \`anki_findNotes\` and pass its
+\`noteId\` to \`anki_updateNote\` with only what changes. A field left out
+keeps what it has, so to add a line to the back, pass the whole new back.
+
+\`anki_updateNote\` with
+\`{"anki": 3, "noteId": 1700000000000, "back": "made better; improved<br>PL: poprawiony, ulepszony"}\`
 
 Tag what came from one conversation or source with one tag, so the person can
 find and delete the batch if it is not what they wanted. Tell them how many
@@ -671,6 +682,63 @@ cards were added and to which deck.`,
             }
           });
           return { added: noteIds.length, noteIds, skipped };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'updateNote',
+        description:
+          'Changes a note Anki already has, by its noteId - findNotes answers it. Pass only what changes: front ' +
+          'and back are the note type\'s first and second fields, fields sets others by name, and a field left ' +
+          'out keeps what it has. tags are added to the note\'s own. Answers the note as it is afterwards.',
+        params: [
+          {
+            name: 'anki',
+            type: 'connection',
+            description: 'Which Anki to change: an AnkiConnect connection, which carries its address and key.',
+          },
+          { name: 'noteId', type: 'number' },
+          { name: 'front', type: 'string', required: false, default: '' },
+          { name: 'back', type: 'string', required: false, default: '' },
+          { name: 'fields', type: 'map', required: false, default: {} },
+          { name: 'tags', type: 'array', required: false, default: [] },
+        ],
+        returnType: 'Note',
+        run: (connection, noteId, front, back, fields, tags) => {
+          if (typeof noteId !== 'number' || !Number.isFinite(noteId)) {
+            throw new Error('no noteId was given - findNotes answers the id of each note it finds');
+          }
+          const before = ask(connection, 'notesInfo', { notes: [noteId] });
+          const held = Array.isArray(before) ? before[0] : null;
+          // notesInfo answers an empty object, not an error, for an id it does not have.
+          if (typeof at(held, 'noteId') !== 'number') {
+            throw new Error(`Anki has no note ${noteId} - findNotes answers the ids of the notes it has`);
+          }
+          const order = noteOf(held).fields.map((field) => field.name);
+          /* Only what was given: an empty front or back means "leave it", not "clear it". */
+          const changed = {};
+          if (typeof front === 'string' && front.length > 0 && order[0] !== undefined) changed[order[0]] = front;
+          if (typeof back === 'string' && back.length > 0 && order[1] !== undefined) changed[order[1]] = back;
+          if (fields !== null && typeof fields === 'object') {
+            for (const [name, value] of Object.entries(fields)) {
+              if (!order.includes(name)) {
+                throw new Error(`a ${at(held, 'modelName')} note has no field called ${name} - it has ${order.join(', ')}`);
+              }
+              changed[name] = String(value ?? '');
+            }
+          }
+          const tagged = Array.isArray(tags) ? tags.map(String).filter((tag) => tag.trim().length > 0) : [];
+          if (Object.keys(changed).length === 0 && tagged.length === 0) {
+            throw new Error('there is nothing to change - pass front, back, fields or tags');
+          }
+          if (Object.keys(changed).length > 0) {
+            ask(connection, 'updateNoteFields', { note: { id: noteId, fields: changed } });
+          }
+          if (tagged.length > 0) {
+            ask(connection, 'addTags', { notes: [noteId], tags: tagged.join(' ') });
+          }
+          const after = ask(connection, 'notesInfo', { notes: [noteId] });
+          return noteOf(Array.isArray(after) ? after[0] : held);
         },
       }),
 
