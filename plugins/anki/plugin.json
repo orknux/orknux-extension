@@ -9,7 +9,7 @@
     "productivity"
   ],
   "summary": "Turn what was read into flashcards, and ask what is due - through AnkiConnect.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "icon": "icon.svg",
   "descriptionPath": "README.md"
 }

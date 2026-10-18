@@ -272,6 +272,8 @@ export default class Anki extends OrknuxPlugin {
         label: 'AnkiConnect',
         description: 'An Anki desktop application with the AnkiConnect add-on, to add cards to and ask what is due.',
         urlPlaceholder: 'http://localhost:8765',
+        // Where AnkiConnect listens unless told otherwise, so the URL box may be left empty.
+        defaultUrl: 'http://localhost:8765',
         guide: GUIDE,
         check: (connection) => {
           const version = ask(connection, 'version');
