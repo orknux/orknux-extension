@@ -559,6 +559,14 @@ test('a kind of host may bring a guide of a page and a check, and no more than t
   ]);
 });
 
+test('a default address is an http or https URL', () => {
+  assert.deepEqual(validateConnectionTypes([{ name: 'anki', label: 'Anki', defaultUrl: 'http://localhost:8765' }]), []);
+  const problems = validateConnectionTypes([{ name: 'odd', label: 'Odd', defaultUrl: 'localhost:8765' }]);
+  assert.deepEqual(problems.map((one) => one.message), [
+    'the connection type odd has a default address that is not an http or https URL: localhost:8765',
+  ]);
+});
+
 test('the same action twice is refused', () => {
   const problems = validateActions([
     { name: 'respond', label: 'Reply', parameters: [], outputs: [] },

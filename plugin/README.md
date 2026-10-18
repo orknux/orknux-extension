@@ -308,12 +308,17 @@ connectionTypes() {
     name: 'ankiconnect',
     label: 'AnkiConnect',
     urlPlaceholder: 'http://localhost:8765',
+    defaultUrl: 'http://localhost:8765',
     guide: '## Before you start\n\nInstall the add-on…',
     check: (connection) => ({ ok: true, message: 'AnkiConnect 6' }),
   }];
 }
 ```
 
+- `defaultUrl` is the address a connection has unless somebody types another,
+  and makes the URL box optional. Declare it only where there really is one:
+  `urlPlaceholder` is an example, and most kinds have no address everybody
+  shares.
 - `guide` is markdown shown beside the form for that kind: what to install,
   where the address comes from, what goes in the credential. At most
   `MAX_CONNECTION_GUIDE_CHARS` characters.

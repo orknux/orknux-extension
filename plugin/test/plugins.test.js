@@ -3170,6 +3170,8 @@ test('the anki plugin declares what the server would accept', async () => {
   assert.equal(kind.name, 'ankiconnect');
   assert.equal(kind.label, 'AnkiConnect');
   assert.equal(kind.urlPlaceholder, 'http://localhost:8765');
+  // Where AnkiConnect listens by default, so the URL box may be left empty.
+  assert.equal(kind.defaultUrl, 'http://localhost:8765');
   assert.equal(kind.checks, true);
   assert.match(kind.guide, /2055492159/);
   assert.match(kind.guide, /webBindAddress/);

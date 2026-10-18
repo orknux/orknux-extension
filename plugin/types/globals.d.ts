@@ -1165,6 +1165,8 @@ interface OrknuxConnectionType {
   description?: string;
   /** What the URL box shows before anything is typed, e.g. 'https://prometheus.example.com'. */
   urlPlaceholder?: string;
+  /** The address a connection has unless another is typed, making the URL optional; only where there really is one. */
+  defaultUrl?: string;
   /** The setup page on the connection form for this kind, as markdown; at most 4000 characters. */
   guide?: string;
   /**

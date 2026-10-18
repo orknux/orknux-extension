@@ -59,6 +59,7 @@ export default class Declaring extends OrknuxPlugin {
         label: 'A server',
         description: 'A kind of host with everything filled in.',
         urlPlaceholder: 'https://server.example.com',
+        defaultUrl: 'https://server.example.com',
         guide: '  # Setting one up\n\nPoint it at the server.  ',
         check: () => ({ ok: true, message: 'It is a server' }),
       },

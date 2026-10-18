@@ -106,6 +106,13 @@ export interface OrknuxConnectionTypeDeclaration {
   /** What the URL box shows before anything is typed, e.g. `https://prometheus.example.com`. */
   urlPlaceholder?: string;
   /**
+   * The address a connection of this kind has unless somebody types another,
+   * which makes the URL box optional - AnkiConnect is `http://localhost:8765`
+   * on nearly every machine. Only where there really is one: a placeholder is
+   * an example, and a Prometheus has no address everybody shares.
+   */
+  defaultUrl?: string;
+  /**
    * What to know while setting one up, as markdown, shown on the connection
    * page for this kind: what to install, where the address comes from, what the
    * credential is. At most 4000 characters; blank is the same as none.

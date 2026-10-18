@@ -419,6 +419,7 @@ function readConnectionType(declared: Record<string, unknown>): DeclaredConnecti
     label: text(declared, 'label') ?? refuse('a connection type has no label'),
     description: text(declared, 'description') ?? null,
     urlPlaceholder: text(declared, 'urlPlaceholder') ?? null,
+    defaultUrl: text(declared, 'defaultUrl') ?? null,
     guide: text(declared, 'guide') ?? null,
     checks: typeof declared['check'] === 'function',
   };

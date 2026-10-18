@@ -147,6 +147,8 @@ export interface DeclaredConnectionType {
   label: string;
   description?: string | null;
   urlPlaceholder?: string | null;
+  /** The address a connection has unless another is typed; an http(s) URL. */
+  defaultUrl?: string | null;
   /** The setup page shown on the connection form, as markdown. */
   guide?: string | null;
   /** Whether it offered a `check`, as inspected; a function does not cross. */
@@ -316,6 +318,10 @@ export function validateConnectionTypes(declared: DeclaredConnectionType[]): Pro
     const label = typeof kind.label === 'string' ? kind.label.trim() : '';
     if (label.length === 0) refuse(`the connection type ${name} has no label`);
 
+    const defaultUrl = typeof kind.defaultUrl === 'string' ? kind.defaultUrl.trim() : '';
+    if (defaultUrl !== '' && !/^https?:\/\/[^\s/]+/.test(defaultUrl)) {
+      refuse(`the connection type ${name} has a default address that is not an http or https URL: ${defaultUrl}`);
+    }
     const guide = typeof kind.guide === 'string' ? kind.guide.trim() : '';
     if (guide.length > MAX_CONNECTION_GUIDE_CHARS) {
       refuse(
