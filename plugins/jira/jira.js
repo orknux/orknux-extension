@@ -497,6 +497,21 @@ function valueFor(settings, entry, given) {
     return { id: String(at(matched, 'id')) };
   };
 
+  /*
+   * The Sprint field is the exception to its own schema. Jira describes it as
+   * a list of strings, and refuses a list or a string: setting it takes the
+   * one sprint's id as a number ("Number value expected as the Sprint id").
+   * Read off the schema it was, 4886 went out as ["4886"].
+   */
+  if (String(at(schema, 'custom') ?? '').endsWith(':gh-sprint')) {
+    const one = Array.isArray(given) ? given[0] : given;
+    const id = Number(String(one ?? '').trim());
+    if (one === undefined || String(one).trim() === '' || !Number.isInteger(id)) {
+      throw new Error(`${field.name} takes the sprint's id, a number, and "${one}" is not one`);
+    }
+    return id;
+  }
+
   const kind = at(schema, 'type');
   if (kind === 'array') {
     const items = Array.isArray(given)

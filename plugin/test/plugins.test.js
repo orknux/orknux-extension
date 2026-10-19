@@ -2155,6 +2155,11 @@ test('jira updateIssue sets fields on an issue that exists, against its own edit
       },
       labels: { name: 'Labels', required: false, schema: { type: 'array', items: 'string' } },
       assignee: { name: 'Assignee', required: false, schema: { type: 'user', system: 'assignee' } },
+      customfield_10005: {
+        name: 'Sprint',
+        required: false,
+        schema: { type: 'array', items: 'string', custom: 'com.pyxis.greenhopper.jira:gh-sprint', customId: 10005 },
+      },
     },
   };
   const people = [
@@ -2208,6 +2213,18 @@ test('jira updateIssue sets fields on an issue that exists, against its own edit
     update.run('OKO-4220', { Assignee: 'me' });
     assert.equal(asked[1].url, 'https://x.atlassian.net/rest/api/2/myself');
     assert.deepEqual(asked.at(-1).body.fields, { assignee: { accountId: 'acc-agent' } });
+
+    /*
+     * The Sprint: described as a list of strings, set as one number. Sent as
+     * the schema read, 4886 went out as ["4886"] and Jira refused it.
+     */
+    asked.length = 0;
+    update.run('OKO-4220', { Sprint: 4886 });
+    assert.deepEqual(asked.at(-1).body.fields, { customfield_10005: 4886 });
+    asked.length = 0;
+    update.run('OKO-4220', { customfield_10005: '4886' });
+    assert.deepEqual(asked.at(-1).body.fields, { customfield_10005: 4886 });
+    assert.throws(() => update.run('OKO-4220', { Sprint: 'Sprint 12' }), /Sprint takes the sprint's id, a number/);
 
     /* A person by name, found the way the site's own picker finds them. */
     asked.length = 0;
