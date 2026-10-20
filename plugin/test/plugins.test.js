@@ -1915,11 +1915,11 @@ test('the jira plugin declares what the server would accept', async () => {
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['search', 'openIssue', 'comment', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged', 'isMentioned'],
+    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged', 'isMentioned'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['search', 'openIssue', 'comment', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged'],
+    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged'],
   );
   /* The project's own fields ride in a map, optional and empty by default, last. */
   const create = inspected.functions.find((declared) => declared.name === 'createIssue');
@@ -1933,7 +1933,7 @@ test('the jira plugin declares what the server would accept', async () => {
    */
   assert.deepEqual(
     inspected.objects.map((shape) => shape.name),
-    ['Search', 'Comment', 'Moved', 'Raised', 'Link', 'Worklog', 'LoggedDay', 'TimeLogged', 'Person', 'Members', 'Linked', 'Updated', 'Field', 'Form', 'Issue'],
+    ['Search', 'Comment', 'Attached', 'Moved', 'Raised', 'Link', 'Worklog', 'LoggedDay', 'TimeLogged', 'Person', 'Members', 'Linked', 'Updated', 'Field', 'Form', 'Issue'],
   );
   const issue = inspected.objects.find((shape) => shape.name === 'Issue');
   assert.equal(issue.properties.length, 14);
@@ -1955,18 +1955,94 @@ test('the jira plugin declares what the server would accept', async () => {
 
   assert.deepEqual(
     inspected.functions.map((one) => one.returnType),
-    ['Search', 'Issue', 'Comment', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged', 'boolean'],
+    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged', 'boolean'],
   );
   /* A proxy carries its function's own return, so the tools agree by construction. */
   assert.deepEqual(
     inspected.tools.map((one) => one.returnType),
-    ['Search', 'Issue', 'Comment', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged'],
+    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged'],
   );
   /* `Search` holds the same shape `openIssue` answers, rather than a second one. */
   const search = inspected.objects.find((shape) => shape.name === 'Search');
   const issues = search.properties.find((property) => property.name === 'issues');
   assert.equal(issues.kind, 'array');
   assert.equal(issues.of, 'Issue');
+});
+
+test('jira attach sends what a key holds as one multipart file, whatever its length', async () => {
+  const url = new URL(`../../plugins/jira/jira.js`, import.meta.url);
+  const { default: Jira } = await import(url.href);
+  const plugin = Object.create(Jira.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ jira: serverJira }) });
+  const tool = plugin.tools().find((one) => one.name === 'attach');
+
+  assert.throws(() => tool.run('OKO-1', 'flow.png', ''), /attach takes a contentKey/);
+
+  /*
+   * Lengths of 0, 1 and 2 mod 3, because the seam between the file and the
+   * closing boundary is different in each - and text, which is encoded first.
+   */
+  const pictures = [300, 401, 502].map((size) => Buffer.from(Array.from({ length: size }, (_, at) => (at * 37 + 11) % 256)));
+  const source = '@startuml\nAlicja -> Bob: żółw\n@enduml\n';
+  const held = new Map([
+    ['picture.a', { value: pictures[0].toString('base64'), kind: { binary: true, contentType: 'image/png' } }],
+    ['picture.b', { value: pictures[1].toString('base64'), kind: { binary: true, contentType: 'image/png' } }],
+    ['picture.c', { value: pictures[2].toString('base64'), kind: { binary: true, contentType: 'image/png' } }],
+    ['source.d', { value: source, kind: { binary: false, contentType: 'text/plain' } }],
+  ]);
+  const store = globalThis.orknux.session.store;
+  globalThis.orknux.session.store = {
+    put: () => ({ ok: true }),
+    get: (key) => held.get(key)?.value ?? null,
+    kind: (key) => held.get(key)?.kind ?? null,
+  };
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  globalThis.orknux.http.request = (what) => {
+    asked.push(what);
+    return {
+      status: 200,
+      headers: {},
+      body: '[]',
+      json: [{ id: '501', filename: 'flow.png', size: 9, content: 'https://jira.example.com/secure/attachment/501/flow.png' }],
+    };
+  };
+  try {
+    assert.throws(() => tool.run('OKO-1', 'flow.png', 'picture.gone'), /nothing is kept under picture.gone/);
+
+    const sent = [...pictures, Buffer.from(source, 'utf8')];
+    ['picture.a', 'picture.b', 'picture.c', 'source.d'].forEach((key, at) => {
+      const filename = at === 3 ? 'flow.puml' : 'flow.png';
+      const answer = tool.run('OKO-4227', filename, key);
+      assert.deepEqual(answer, {
+        id: '501',
+        filename: 'flow.png',
+        size: 9,
+        url: 'https://jira.example.com/secure/attachment/501/flow.png',
+        issue: 'https://jira.example.com/browse/OKO-4227',
+      });
+
+      const request = asked.at(-1);
+      assert.equal(request.url, 'https://jira.example.com/rest/api/2/issue/OKO-4227/attachments');
+      assert.equal(request.method, 'POST');
+      assert.equal(request.headers['X-Atlassian-Token'], 'no-check');
+      assert.equal(request.headers.Authorization, 'Bearer t');
+      const boundary = /boundary=(.+)$/.exec(request.headers['content-type'])[1];
+
+      /* What Jira reads: one part, its headers, then exactly the bytes that were kept. */
+      const body = Buffer.from(request.bodyBase64, 'base64');
+      assert.equal(request.bodyBase64, body.toString('base64'), 'the body is well-formed base64');
+      const head = Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+          `Content-Type: ${at === 3 ? 'text/plain' : 'image/png'}\r\n\r\n`,
+      );
+      const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+      assert.deepEqual(body, Buffer.concat([head, sent[at], tail]));
+    });
+  } finally {
+    globalThis.orknux.session.store = store;
+    globalThis.orknux.http.request = door;
+  }
 });
 
 test('jira createIssue resolves a project\'s own fields against its form', async () => {

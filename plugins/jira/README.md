@@ -14,6 +14,7 @@ behalf under `NETWORK_REQUEST` — the plugin never holds the token.
 | `search(jql, limit)` | Jira's own query language: `project = PROJ AND status = "In Progress"`, `assignee = currentUser() ORDER BY updated DESC`. |
 | `openIssue(key)` | One issue whole, description included, as text. Answers the `Issue` shape below rather than a bare map. |
 | `comment(key, text)` | A comment, as plain text. |
+| `attach(key, filename, base64 = "", contentKey = "")` | A file onto an issue - a rendered diagram, a PDF. An agent's tool takes only the `contentKey` the tool that made the bytes answered. |
 | `transition(key, to)` | Moves an issue — what dragging its card to another column does. |
 | `form(project, type)` | What a new issue of that type in that project has to say: every field by name, which are required, and the values each choice takes. |
 | `createIssue(project, type, summary, description, fields = {})` | Raises a new one. `fields` is whatever else the project asks for, keyed by name as `form` lists it. |

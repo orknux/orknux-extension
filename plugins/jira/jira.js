@@ -593,6 +593,155 @@ function linked(one) {
   };
 }
 
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** The one or two bytes a padded final base64 quartet carries. */
+function bytesOfQuartet(quartet) {
+  const sextets = [...quartet].map((one) => (one === '=' ? 0 : ALPHABET.indexOf(one)));
+  if (sextets.some((one) => one < 0)) {
+    throw new Error('the file is not base64');
+  }
+  const word = (sextets[0] << 18) | (sextets[1] << 12) | (sextets[2] << 6) | sextets[3];
+  const all = [(word >> 16) & 0xff, (word >> 8) & 0xff, word & 0xff];
+  return all.slice(0, 3 - (/=+$/.exec(quartet)?.[0].length ?? 0));
+}
+
+/** A few bytes as base64 - the seam between a file and what follows it. */
+function base64OfBytes(bytes) {
+  let out = '';
+  for (let at = 0; at < bytes.length; at += 3) {
+    const left = bytes.length - at;
+    const word = (bytes[at] << 16) | ((bytes[at + 1] ?? 0) << 8) | (bytes[at + 2] ?? 0);
+    out += ALPHABET[(word >> 18) & 63] + ALPHABET[(word >> 12) & 63];
+    out += left > 1 ? ALPHABET[(word >> 6) & 63] : '=';
+    out += left > 2 ? ALPHABET[word & 63] : '=';
+  }
+  return out;
+}
+
+/**
+ * A multipart form carrying one file, as the base64 of its bytes.
+ *
+ * Built here because nothing else can: Jira takes attachments only as
+ * multipart/form-data, and the server's door sends one body of bytes and
+ * nothing more shaped than that. Assembled without decoding the file, which
+ * at a few megabytes would spend the sandbox's statement budget a byte at a
+ * time: base64 of a concatenation is the concatenation of base64s wherever
+ * every piece but the last is a multiple of three bytes long. The head is made
+ * one by lengthening its boundary; the file is what it is, so its last one or
+ * two odd bytes are decoded and re-encoded together with the tail.
+ */
+function multipartOf(filename, contentType, base64) {
+  const file = base64.replace(/\s+/g, '');
+  if (file.length === 0 || file.length % 4 !== 0) {
+    throw new Error('there are no bytes to attach, or they are not base64');
+  }
+  const quoted = filename.replace(/["\r\n\\]/g, '_');
+
+  let boundary = 'orknux' + String(Date.now());
+  let head = null;
+  for (let tries = 0; head === null; tries += 1) {
+    if (tries === 3) throw new Error('could not encode the form');
+    if (tries > 0) boundary += 'x';
+    const encoded = orknux.encoding.encodeBase64(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${quoted}"\r\n` +
+        `Content-Type: ${contentType}\r\n\r\n`,
+    );
+    if (encoded.error !== undefined) throw new Error(`could not encode the form: ${encoded.error}`);
+    if (!encoded.base64.endsWith('=')) head = encoded.base64;
+  }
+
+  const tail = [...`\r\n--${boundary}--\r\n`].map((one) => one.charCodeAt(0));
+  const padded = file.endsWith('=');
+  const body = padded ? file.slice(0, -4) : file;
+  const seam = padded ? [...bytesOfQuartet(file.slice(-4)), ...tail] : tail;
+
+  return { boundary: boundary, base64: head + body + base64OfBytes(seam) };
+}
+
+/** What a filename's extension says the bytes are, where nothing else said. */
+function contentTypeOf(filename) {
+  const known = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    md: 'text/markdown',
+    csv: 'text/csv',
+    json: 'application/json',
+    puml: 'text/plain',
+  };
+  const extension = /\.([A-Za-z0-9]+)$/.exec(filename)?.[1].toLowerCase();
+  return known[extension] ?? 'application/octet-stream';
+}
+
+/** One file onto an issue, answered as Jira lists it. */
+function attached(settings, key, filename, contentType, base64) {
+  const named = typeof key === 'string' ? key.trim() : '';
+  const called = typeof filename === 'string' ? filename.trim() : '';
+  if (named.length === 0) {
+    throw new Error('there is no issue key to attach to');
+  }
+  if (called.length === 0) {
+    throw new Error('an attachment needs a filename, whose extension says what it is');
+  }
+
+  const form = multipartOf(called, contentType ?? contentTypeOf(called), base64);
+  const path = `/rest/api/2/issue/${encodeURIComponent(named)}/attachments`;
+  const answered = orknux.http.request({
+    url: root(settings) + path,
+    method: 'POST',
+    // Jira refuses an attachment without it, as a request forged from another site.
+    headers: Object.assign(headers(settings), {
+      'X-Atlassian-Token': 'no-check',
+      'content-type': `multipart/form-data; boundary=${form.boundary}`,
+    }),
+    bodyBase64: form.base64,
+  });
+  if (answered.error !== undefined) {
+    throw new Error(`could not reach Jira: ${answered.error}`);
+  }
+  if (answered.status >= 400) {
+    const messages = at(answered.json, 'errorMessages');
+    const said = Array.isArray(messages) ? messages.filter((one) => typeof one === 'string') : [];
+    throw new Error(`Jira answered ${answered.status}${said.length > 0 ? ': ' + said.join('; ') : ''} for ${path}`);
+  }
+
+  const first = Array.isArray(answered.json) ? answered.json[0] : null;
+  return {
+    id: at(first, 'id'),
+    filename: at(first, 'filename') ?? called,
+    size: at(first, 'size'),
+    url: at(first, 'content'),
+    issue: `${root(settings)}/browse/${named}`,
+  };
+}
+
+/**
+ * The base64 of what a session keeps under a key: bytes as they are, text
+ * encoded - which is how a diagram's picture and its source both attach.
+ */
+function heldUnder(contentKey) {
+  const held = orknux.session.store.get(contentKey);
+  if (typeof held !== 'string' || held.length === 0) {
+    throw new Error(
+      `nothing is kept under ${contentKey} in this session: make the file again and pass the key ` +
+        'that answer carried. A key is only good for the session it was made in.',
+    );
+  }
+  const kind = typeof orknux.session.store.kind === 'function' ? orknux.session.store.kind(contentKey) : null;
+  if (kind !== null && kind !== undefined && kind.binary === false) {
+    const encoded = orknux.encoding.encodeBase64(held);
+    if (encoded.error !== undefined) throw new Error(`could not encode ${contentKey}: ${encoded.error}`);
+    return { base64: encoded.base64, contentType: kind.contentType ?? null };
+  }
+  return { base64: held, contentType: kind?.contentType ?? null };
+}
+
 export default class Jira extends OrknuxPlugin {
 
   id() {
@@ -689,6 +838,18 @@ export default class Jira extends OrknuxPlugin {
         properties: [
           { name: 'id', kind: 'string', description: 'What Jira calls it.' },
           { name: 'url', kind: 'string', description: 'A link that opens the issue at this comment.' },
+        ],
+      }),
+
+      new OrknuxObject({
+        name: 'Attached',
+        description: 'A file that was attached to an issue.',
+        properties: [
+          { name: 'id', kind: 'string', description: 'What Jira calls it.' },
+          { name: 'filename', kind: 'string', description: 'Its name on the issue, which a comment shows it by.' },
+          { name: 'size', kind: 'number', description: 'In bytes.' },
+          { name: 'url', kind: 'string', description: 'Where its content is, for somebody signed in to Jira.' },
+          { name: 'issue', kind: 'string', description: 'The link for a person to open the issue.' },
         ],
       }),
 
@@ -1028,6 +1189,33 @@ is in use, its entries appear here too, but its approval state does not.`,
       new OrknuxFunctionTool({ function: 'search' }),
       new OrknuxFunctionTool({ function: 'openIssue' }),
       new OrknuxFunctionTool({ function: 'comment' }),
+      /*
+       * Not its function, for the reason Slack's uploadBinary is not: a model
+       * copying kilobytes of base64 into an argument gets one character wrong
+       * and the call is rejected, so the tool takes the key and nothing else.
+       */
+      new OrknuxTool({
+        name: 'attach',
+        description:
+          'Attaches a file to an issue - a rendered diagram, a PDF, the source it was made from. The ' +
+          'bytes are named, never typed: pass the short contentKey the tool that made them answered ' +
+          'beside them, and a filename whose extension says what they are (flow.png, flow.puml). ' +
+          'Answers the attachment and the issue\'s link. On Jira Server a comment shows an attached ' +
+          'picture where it says !flow.png! by its filename.',
+        params: [
+          { name: 'key', type: 'string' },
+          { name: 'filename', type: 'string' },
+          { name: 'contentKey', type: 'string' },
+        ],
+        returnType: 'Attached',
+        run: (key, filename, contentKey) => {
+          if (typeof contentKey !== 'string' || contentKey.length === 0) {
+            throw new Error('attach takes a contentKey, not bytes: make the file first and pass the key that answer carried');
+          }
+          const held = heldUnder(contentKey);
+          return attached(this.settings, key, filename, held.contentType, held.base64);
+        },
+      }),
       new OrknuxFunctionTool({ function: 'transition' }),
       new OrknuxFunctionTool({ function: 'form' }),
       new OrknuxFunctionTool({ function: 'createIssue' }),
@@ -1142,6 +1330,29 @@ is in use, its entries appear here too, but its approval state does not.`,
             id: at(made, 'id'),
             url: `${root(this.settings)}/browse/${named}?focusedCommentId=${at(made, 'id')}`,
           };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'attach',
+        description:
+          'Attaches a file to an issue. Pass the key (PROJ-123), a filename whose extension says what ' +
+          'the bytes are (flow.png), and either a contentKey a tool answered in this session or the ' +
+          'bytes as base64 - the key wins where both are given. Answers the attachment and the ' +
+          'issue\'s link.',
+        params: [
+          { name: 'key', type: 'string' },
+          { name: 'filename', type: 'string' },
+          { name: 'base64', type: 'string', required: false, default: '' },
+          { name: 'contentKey', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'Attached',
+        run: (key, filename, base64, contentKey) => {
+          if (typeof contentKey === 'string' && contentKey.length > 0) {
+            const held = heldUnder(contentKey);
+            return attached(this.settings, key, filename, held.contentType, held.base64);
+          }
+          return attached(this.settings, key, filename, null, typeof base64 === 'string' ? base64 : '');
         },
       }),
 
