@@ -1188,13 +1188,38 @@ function connectionArgument(args, settings) {
   return own === undefined || own === null || String(own).length === 0 ? null : String(own);
 }
 
+/**
+ * A Slack function as an agent's tool, with its connection said as one.
+ *
+ * The functions take the connection first, as text: a workflow node hands on
+ * the one its trigger came in on, and an empty one means the configured
+ * Slack. A model had none of that to go on - it was told to pass "the
+ * connection the event came in on" with no event in front of it, and wrote
+ * "id1". Its tool takes the connection last and as a connection, may leave it
+ * out, and is shown by the server which Slack connections it was granted,
+ * each by id and name. The function behind it is unchanged.
+ */
+function slackTool(fn) {
+  const rest = fn.params.filter((one) => one.name !== 'connection');
+  return new OrknuxTool({
+    name: fn.name,
+    description: (fn.description ?? '').replace(
+      /\s*Pass the connection the event came in on,? or an empty\s+string to\s+use the configured\s+one\.(\s*An empty string is always safe:[^.]*\.)?/,
+      '',
+    ),
+    params: [...rest, { name: 'connection', type: 'connection', required: false }],
+    returnType: fn.returnType,
+    run: (...given) => fn.run(given[rest.length] ?? '', ...given.slice(0, rest.length)),
+  });
+}
+
 function through(call, asked, configured) {
   const first = call(asked || configured);
   if (first.error === undefined || !asked || asked === configured) return first;
   if (!connectionGone(first.error)) return first;
 
   orknux.log.warn(
-    `the connection this event came in on (${asked}) has been deleted; using the configured one instead`,
+    `the connection this event came in on (${asked && typeof asked === 'object' ? asked.id : asked}) has been deleted; using the configured one instead`,
   );
   return call(configured);
 }
@@ -2238,14 +2263,15 @@ it notifies nobody else.`,
   tools() {
     const read = this.functions().find((one) => one.name === 'readAttachment');
     const posted = this.functions().find((one) => one.name === 'post');
+    const fn = (name) => this.functions().find((one) => one.name === name);
     return [
-      new OrknuxFunctionTool({ function: 'readMessage' }),
-      new OrknuxFunctionTool({ function: 'whoIs' }),
+      slackTool(fn('readMessage')),
+      slackTool(fn('whoIs')),
       new OrknuxFunctionTool({ function: 'findUsers' }),
       new OrknuxFunctionTool({ function: 'findChannels' }),
       new OrknuxFunctionTool({ function: 'listThreads' }),
-      new OrknuxFunctionTool({ function: 'mention' }),
-      new OrknuxFunctionTool({ function: 'readThread' }),
+      slackTool(fn('mention')),
+      slackTool(fn('readThread')),
       /*
        * The third tool here that is not its function, and the last way base64
        * could reach a model: `attachments` takes maps, and one of them could

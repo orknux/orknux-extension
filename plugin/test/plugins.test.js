@@ -817,6 +817,27 @@ test('the slack plugin declares what the server would accept', async () => {
       assert.ok(behind.params.some((one) => one.name === 'content'), 'while the function keeps content');
       continue;
     }
+    /*
+     * The four that read through a Slack take it as a connection, last and
+     * optional, so the server can show a model which Slacks it holds; the
+     * function behind keeps its text connection first for workflows.
+     */
+    if (['readMessage', 'whoIs', 'mention', 'readThread'].includes(declared.name)) {
+      assert.equal(declared.proxyOf, null, `the agents' ${declared.name} is its own tool`);
+      const behind = inspected.functions.find((one) => one.name === declared.name);
+      const last = declared.params.at(-1);
+      assert.equal(last.name, 'connection');
+      assert.equal(last.type, 'connection');
+      assert.equal(last.required, false, 'and may be left out');
+      assert.deepEqual(
+        declared.params.slice(0, -1),
+        behind.params.filter((one) => one.name !== 'connection'),
+        'after the arguments the function takes',
+      );
+      assert.equal(behind.params[0].name, 'connection', 'while the function keeps it first');
+      assert.ok(!/empty string/.test(declared.description), `${declared.name} no longer talks of an empty string`);
+      continue;
+    }
     if (declared.name === 'readAttachment') {
       assert.equal(declared.proxyOf, null, "the agents' readAttachment is its own tool");
       const behind = inspected.functions.find((one) => one.name === 'readAttachment');
@@ -1354,6 +1375,29 @@ test('slack finds people by email exactly, and by name through the directory', a
   assert.equal(narrow.total, 3, 'ada, Bob Adams and the second Lovelace all carry "ada"');
 
   assert.throws(() => call('findUsers').run('   ', 10), /nobody to look for/);
+});
+
+test('a slack tool hands its connection to the function first, or nothing where it was left out', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 4, type: 'SLACK' } }) });
+  const tool = plugin.tools().find((one) => one.name === 'readMessage');
+
+  const used = [];
+  const message_ = globalThis.orknux.slack.message;
+  try {
+    globalThis.orknux.slack.message = (connection, link) => {
+      used.push([connection && typeof connection === 'object' ? connection.id : connection, link]);
+      return { channel: 'C1', ts: '1.2', user: 'U1', text: 'hi' };
+    };
+    const link = 'https://x.slack.com/archives/C1/p1791887333814519';
+    tool.run(link, { id: 9, type: 'SLACK' });
+    tool.run(link, null);
+  } finally {
+    globalThis.orknux.slack.message = message_;
+  }
+  assert.deepEqual(used, [[9, 'https://x.slack.com/archives/C1/p1791887333814519'], [4, 'https://x.slack.com/archives/C1/p1791887333814519']]);
 });
 
 test('slack reads a thread as people, and looks each of them up once', async () => {
