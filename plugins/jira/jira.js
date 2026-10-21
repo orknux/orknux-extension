@@ -1037,148 +1037,532 @@ export default class Jira extends OrknuxPlugin {
   }
 
   /*
-   * JQL is the part a model gets wrong, and it gets it wrong silently: a
-   * query with a mistaken field name does not fail, it returns nothing, and
-   * "there are no issues" reads exactly like "I searched badly". So the page
-   * an agent reads is mostly a query cookbook, plus the two moves that change
-   * somebody else's board and deserve a moment's thought first.
+   * One page per decision an agent makes before or between calls, rather than
+   * one page for everything: a model asked to fix a ticket's formatting should
+   * not have to read the timesheet loop to find it. The pages do not name one
+   * another, so each repeats what it needs - the formatting essentials appear
+   * again where an issue is raised, on purpose.
+   *
+   * Every text this plugin sends goes through REST v2 - comments, descriptions,
+   * field updates - and v2 takes Jira wiki markup on Cloud and on Server alike,
+   * so wiki markup is what the formatting page teaches. Not ADF, which only v3
+   * speaks, and not markdown, which nothing here converts.
    */
   skills() {
     return [
       new OrknuxSkill({
-        name: 'Finding and moving Jira issues',
+        /*
+         * The id this page had when it was the only one, when it was derived
+         * from its old name. Kept, because a workspace may have marked it
+         * Always or a graph may load it by that id; the name moved to what
+         * the page is about now.
+         */
+        id: 'finding-and-moving-jira-issues',
+        name: 'Finding Jira issues with JQL',
         description:
-          'How to write JQL that finds what you meant, and what to check before changing a ticket.',
-        content: `# Finding and moving Jira issues
+          'How to write a JQL search that finds what you meant, and what an empty answer usually means.',
+        content: `# Finding Jira issues with JQL
+
+\`jira_search\` takes JQL and answers up to \`limit\` issues (25 unless given,
+100 at most):
+
+    jira_search {"jql": "project = PROJ AND resolution = Unresolved ORDER BY updated DESC", "limit": 50}
 
 ## An empty result is usually a bad query
 
-JQL does not fail on a query that means nothing useful — it returns nothing.
-So "no issues found" and "I asked the wrong question" look identical from
-here, and the difference matters.
+JQL does not fail on a query that means nothing useful - it returns nothing.
+"No issues found" and "I asked the wrong question" look identical from here.
 
 Before believing an empty answer, widen it: drop the narrowest clause and
-search again. If \`project = PROJ AND status = "In Review" AND assignee = x\`
-is empty, try it without the assignee. If that is empty too, try
-\`project = PROJ ORDER BY updated DESC\` and see what the statuses are actually
-called on this board. They are rarely what you assumed.
+search again. If \`project = PROJ AND status = "In Review" AND assignee = x\` is
+empty, try it without the assignee. If that is empty too, search
+\`project = PROJ ORDER BY updated DESC\` and read what the statuses on this board
+are actually called. They are rarely what you assumed.
 
-## Queries worth knowing
+A field, project or status Jira does not know is refused, and the refusal
+says which - read it rather than retrying. What quietly matches nothing is a
+value that exists but is not what you meant: a status another board uses, a
+label spelled differently, a person named where Cloud wants an account id, a
+text search for words the reporter did not use.
 
-\`\`\`
-project = PROJ AND status != Done ORDER BY updated DESC
-assignee = currentUser() AND status != Done
-project = PROJ AND created >= -7d
-text ~ "connection timeout" AND project = PROJ
-labels = urgent AND status = "In Progress"
-project = PROJ AND status CHANGED TO Done AFTER -1w
-"Epic Link" = PROJ-100
-\`\`\`
+## Fields worth knowing
 
-Things that catch people out:
+| field | example |
+|---|---|
+| project | \`project = PROJ\`, \`project in (PROJ, OPS)\` |
+| issuetype | \`issuetype = Bug\`, \`issuetype in (Story, Task)\` |
+| status | \`status = "In Progress"\` - per workflow, see below |
+| statusCategory | \`statusCategory != Done\` - the same three on every board |
+| resolution | \`resolution = Unresolved\` - "still open", whatever the board |
+| assignee, reporter | \`assignee = currentUser()\`, \`assignee is EMPTY\` |
+| priority | \`priority in (Highest, High)\` |
+| labels, component | \`labels = urgent\`, \`component = Checkout\` |
+| fixVersion | \`fixVersion = "2.4.0"\`, \`fixVersion in unreleasedVersions()\` |
+| sprint | \`sprint in openSprints()\` |
+| created, updated, resolved, due | \`created >= -7d\`, \`due < now()\` |
+| text, summary, comment | \`text ~ "connection timeout"\` |
+| parent / "Epic Link" | \`parent = PROJ-100\` (Cloud), \`"Epic Link" = PROJ-100\` (Server) |
+| a custom field | \`"Occurs on" = DEV\` or \`cf[10123] = DEV\` |
 
-- **Quote anything with a space.** \`status = In Review\` is a syntax error;
-  \`status = "In Review"\` is not.
-- **\`~\` is text search, \`=\` is exact.** \`summary ~ "timeout"\` finds it in a
-  sentence; \`summary = "timeout"\` wants the whole summary to be that word.
-- **Relative dates are \`-7d\`, \`-2w\`, \`-1M\`** — capital M is months, lowercase
-  m is minutes, and that one bites.
-- **\`ORDER BY\` goes last**, always, after every clause.
-- **Status names are per-workflow.** "Done" on one board is "Closed" on the
-  next. Look before you assume.
+## Operators
 
-## Read before you write
+- \`=\`, \`!=\`, \`in (...)\`, \`not in (...)\` - exact values.
+- \`~\`, \`!~\` - text search. \`summary ~ "timeout"\` finds the word in a sentence;
+  \`summary = "timeout"\` wants the whole summary to be that word.
+- \`is EMPTY\`, \`is not EMPTY\` - the field has no value.
+- \`>\`, \`>=\`, \`<\`, \`<=\` - dates, numbers, and ordered fields like priority.
+- \`was\`, \`was in\`, \`changed\` - history:
+  \`status changed to Done after -1w\`,
+  \`status was "In Progress" during ("2026-09-01", "2026-09-30")\`,
+  \`assignee changed by currentUser() after startOfWeek()\`.
 
-\`jira_openIssue(key)\` before commenting on or moving anything. The summary is
-not the ticket: the description says what was actually asked for, the comments
-say what has been tried, and the status says whether somebody is already on it.
-Acting on the summary alone is how a duplicate comment gets added to a ticket
-that was closed last week.
+## Functions
 
-## Moving an issue
+- \`currentUser()\` - whoever the connection signs in as.
+- \`membersOf("team-checkout")\` - everyone in a group: \`assignee in membersOf("team-checkout")\`.
+- \`openSprints()\`, \`closedSprints()\`, \`futureSprints()\` - with \`sprint in\`.
+- \`now()\`, \`startOfDay()\`, \`endOfDay()\`, \`startOfWeek()\`, \`startOfMonth()\` -
+  each takes an offset: \`created >= startOfDay(-1)\` is since yesterday began,
+  \`resolved >= startOfWeek(-1w) AND resolved < startOfWeek()\` is last week.
+- \`linkedIssues("PROJ-123")\` - \`issue in linkedIssues("PROJ-123")\`.
+- \`unreleasedVersions()\`, \`releasedVersions()\` - with \`fixVersion in\`.
 
-\`jira_transition(key, to)\` takes a **name**, not an id, and which names are
-available depends on where the issue is right now — a board can forbid going
-straight from "To Do" to "Done". If the name you want is refused, the refusal
-lists what *is* possible from here; pick from that list rather than trying
-synonyms.
+## Things that catch people out
 
-Say why in a comment when you move something. A status change with no comment
-is a mystery to whoever sees it in their morning filter.
+- **Quote anything with a space or a reserved word.** \`status = In Review\` is
+  a syntax error; \`status = "In Review"\` is not. Double quotes, always.
+- **\`!=\` drops the empty ones.** \`assignee != alice\` leaves out every
+  unassigned issue, and \`labels != wontfix\` every issue with no labels. Say
+  \`(assignee != alice OR assignee is EMPTY)\` when you mean them too.
+- **Relative dates take \`w\`, \`d\`, \`h\` and \`m\`** - \`-2w\`, \`-7d\`, \`-4h\`. Lowercase
+  m is minutes, not months, and that one bites. For a month, use a function:
+  \`created >= startOfMonth(-1)\`.
+- **\`ORDER BY\` goes last**, after every clause: \`ORDER BY priority DESC, updated DESC\`.
+- **\`AND\` binds before \`OR\`.** Bracket an \`OR\` whenever it sits beside an \`AND\`.
+- **Status names are per workflow.** "Done" on one board is "Closed" on the
+  next. For "open" use \`resolution = Unresolved\` or \`statusCategory != Done\`,
+  which mean the same thing on every board.
+- **On Cloud, a person is an account id, not a name.** \`assignee = "Alice Smith"\`
+  matches nothing there. Use \`currentUser()\`, \`membersOf(...)\`, or the \`id\`
+  \`jira_groupMembers\` answers. Server takes the username.
 
-## Raising one
+## Reading what came back
 
-Search first. \`jira_createIssue\` will happily make a second copy of a bug that
-is already open, and a duplicate is worse than no ticket: it splits the
-discussion and somebody has to close it by hand.
+A search answers key, summary, status, type, priority, assignee, reporter,
+created, updated and a url per issue - not the description, labels or links.
+Open the ones that matter with \`jira_openIssue\` before saying what they are
+about. \`total\` is the whole count on Server and null on Cloud, which no longer
+tells anybody: on Cloud say "at least N", never a number you did not get.
 
-Write the description as plain text. Jira renders its own wiki markup, not
-markdown, so asterisks and backticks arrive as asterisks and backticks. Put
-what happened, what was expected, and how to see it — in that order.
+## Before moving one
 
-## When a project insists on more
+Read it first, move it by name, and say why in a comment.
+\`jira_transition\` takes a status or transition name, and a name not available
+from where the issue stands is refused with the list of the ones that are -
+pick from that list rather than trying synonyms.`,
+      }),
 
-A project can make fields of its own mandatory — "Occurs on: PROD, UAT or
-DEV", "Kind of work: one of six" — and a create that leaves one out is
-refused, naming the field. Do not give up there, and do not guess at values.
+      new OrknuxSkill({
+        id: 'jira-formatting',
+        name: 'Writing Jira text that renders',
+        description:
+          'Jira wiki markup for comments and descriptions - headings, lists, code, links, mentions, tables, panels - and the markdown habits that break it.',
+        content: `# Writing Jira text that renders
 
-\`jira_form(project, type)\` answers the whole form: every field by name, which
-ones are required, and the values each choice takes. Then pass them to
-\`jira_createIssue\` in \`fields\`, keyed by name, valued by label:
+Every text this plugin sends - \`jira_comment\`'s \`text\`, \`jira_createIssue\`'s
+\`description\`, a text field through \`jira_updateIssue\` - goes to Jira as
+**wiki markup**. That is true on Cloud and on Server alike. It is not markdown,
+and nothing on the way converts markdown for you: \`**bold**\`, backticks
+around code and \`[text](url)\` arrive with their punctuation showing.
 
-\`\`\`
-fields: { "Occurs on": "DEV", "Kind of work": "Maintenance" }
-\`\`\`
+## The essentials
 
-A list takes a list, or one string with commas in it. A value that is not one
-of the choices is refused here, with the choices — so if the person said
-"dev", the answer is the label spelled as the form spells it.
+| you want | write | not |
+|---|---|---|
+| bold | \`*bold*\` | \`**bold**\` |
+| italic | \`_italic_\` | \`*italic*\` |
+| strikethrough | \`-struck-\` | \`~~struck~~\` |
+| inline code | \`{{getUser()}}\` | a backtick pair |
+| heading | \`h2. Steps\` at the start of a line | \`## Steps\` |
+| bullet | \`* item\`, nested \`** item\` | \`  - item\` indented |
+| numbered | \`# step\`, nested \`## step\` | \`1. step\` |
+| another issue | \`PROJ-123\`, as it is | a link around it |
+| quote | \`bq. one line\`, or \`{quote}...{quote}\` | \`> quoted\` |
+| rule | \`----\` on its own line | \`***\` |
 
-## Fixing a field on an issue that exists
+A link is \`[the runbook|https://wiki/x]\` - text, a pipe, the address - never
+\`[the runbook](https://wiki/x)\`. A bare address is linked by itself.
 
-\`jira_updateIssue(key, fields)\` takes the same map — names for keys, labels
-for values — and sets those fields on an existing issue. "You forgot the
-team" is \`fields: { "Team": "OKO Cyklonu" }\` on the ticket, not a new
-ticket. A field it does not know is refused with the names the issue does
-have, and a label that is not a choice is refused with the choices, so one
-wrong guess costs one call.
+**\`#\` at the start of a line is a numbered list**, not a heading. A markdown
+\`# Summary\` arrives as "1. Summary". Headings are \`h1.\` to \`h6.\` followed by
+a space; \`h3.\` is the right size inside a comment.
 
-A user field — Assignee, Reporter — takes a person the way you would say
-them: a display name, a username or an email, and Jira's own search finds
-the account. \`"Assignee": "me"\` is whoever the token is, so "assign it to
-yourself" needs no id.
+Leave a blank line between a paragraph and a list or a heading, and before
+and after a code block.
 
-## Linking two issues
+## Code and logs
 
-\`jira_link(from, relation, to)\` makes a link, and the relation is the verb
-as a person says it — "depends on", "blocks", "relates to", "duplicates" —
-matched against the link types this Jira has. Direction matters and the
-verb carries it: \`link("OKO-4219", "depends on", "OKO-4124")\` and
-\`link("OKO-4124", "is depended on by", "OKO-4219")\` make the same link.
-A verb this Jira does not have is refused with the ones it does, so pick
-from that list rather than trying synonyms.
+    {code:java}
+    if (user == null) throw new IllegalStateException("no user");
+    {code}
 
-\`jira_openIssue\` answers \`links\` — what the issue already blocks, depends
-on or relates to, each with the verb from this issue's side — so read it
-before adding one that is already there.
+\`{code}\` with no language is fine. For a log, a stack trace or anything that
+must stay exactly as it is, use \`{noformat}...{noformat}\` - nothing inside is
+read as markup.
 
-## Checking a team's timesheets
+**Anything with braces goes in one of the two.** Jira reads \`{word}\` as a
+macro, so a JSON body or a template placeholder typed straight into a sentence
+can swallow the rest of the comment. The same for \`[\` - a bracket pair is a
+link.
 
-\`jira_timeLogged(user, from, to)\` answers one person's logged time day by
-day. Left empty, \`from\` and \`to\` are last week, Monday to Sunday, which
-is what "did everyone log last week" means. \`jira_groupMembers(group)\`
-lists who is in a Jira group, so a team is one call and a check is a loop:
+## Tables
 
-1. \`groupMembers\` for the team, then \`timeLogged(person.id)\` for each.
-2. Read \`days\`: every date is there, weekends included, and \`weekday\`
-   says which is which. A weekday with fewer hours than the team expects
-   is a gap; a Saturday with 0 is not.
-3. Say who is short and on which days, with the hours they did log. Do not
-   list the people who are fine one by one - "everyone else is complete"
-   is the sentence.
+    ||Service||Status||Since||
+    |checkout|failing|09:40|
+    |search|ok| |
 
-Time is read from Jira's own work log. Where Tempo or another timesheet app
-is in use, its entries appear here too, but its approval state does not.`,
+Header cells use \`||\`, body cells \`|\`. One row per line, no separator row,
+and an empty cell needs a space. Keep them small - a table of two columns
+reads better as a list.
+
+## Panels
+
+    {panel:title=Root cause}
+    The cache key ignored the currency.
+    {panel}
+
+    {info}Deployed to UAT, not yet to PROD.{info}
+    {warning}Do not re-run the migration.{warning}
+
+\`{note}\` and \`{tip}\` exist too. Use one panel to make one thing stand out;
+a comment that is all panels has nothing standing out.
+
+## Mentions
+
+A mention notifies the person. It is \`[~username]\` on Server and Data Center
+and \`[~accountid:5b10ac8d82e05b22cc7d4ef5]\` on Cloud (a site under
+\`atlassian.net\`). A display name in brackets is not a mention. The \`id\`
+\`jira_groupMembers\` answers is exactly what goes after the tilde - a username
+on Server, an account id on Cloud, where it goes after \`accountid:\`.
+
+Mention somebody only when they need to act. A mention is an email.
+
+## Attachments
+
+After \`jira_attach\` has put a file on the issue, \`!flow.png!\` shows a
+picture inline and \`[^report.pdf]\` links to an attached file, by its
+filename, on Server and Data Center. The file is in the issue's attachments
+either way.
+
+## Escaping
+
+A character that would be read as markup is written with a backslash before
+it: \`\\*\` for a literal asterisk, \`\\[\` for a bracket, \`\\{\` for a brace.
+Hyphens and asterisks inside words (\`re-run\`, \`a*b\`) are safe; the trouble is
+a pair around a word, like \`-v-\` or \`*nix*\`.
+
+## A comment, written properly
+
+    jira_comment {"key": "PROJ-123", "text": "h3. What I found\\n\\nThe 500 comes from the payment client timing out after *5 s*.\\n\\n* Reproduced on UAT with a gift card\\n* Not on PROD - the timeout there is 30 s\\n\\n{noformat}\\nPaymentTimeoutException: no answer in 5000 ms\\n{noformat}\\n\\nFix is in [the pull request|https://github.com/acme/shop/pull/412]."}
+
+## When markup shows literally
+
+A Server project can have a field set to the plain text renderer, and then
+every \`*\` shows as typed. If somebody says your text arrived full of
+asterisks and brackets although it was wiki markup, that is why: write plain
+sentences in that project and do not try to fix it with more markup.`,
+      }),
+
+      new OrknuxSkill({
+        id: 'jira-raising-an-issue',
+        name: 'Raising a Jira issue somebody can act on',
+        description:
+          'What to check before creating an issue, how a bug, a story and a task are each written, and the fields a project asks for.',
+        content: `# Raising a Jira issue somebody can act on
+
+## Search first
+
+\`jira_createIssue\` will happily make a second copy of a bug that is already
+open, and a duplicate is worse than no ticket: it splits the discussion and
+somebody has to close it by hand. Look for the words the reporter would use:
+
+    jira_search {"jql": "project = PROJ AND resolution = Unresolved AND text ~ \\"gift card checkout\\" ORDER BY updated DESC"}
+
+If one exists, comment on it with what is new instead of raising another.
+
+## The summary
+
+One line, under about eighty characters, saying what is wrong or what is
+wanted, where. Specific enough to be found by search a month from now.
+
+- Good: "Checkout returns 500 when the cart holds a gift card"
+- Bad: "Bug in checkout", "Error", "Fix the issue Alice mentioned"
+
+No "Bug:" prefix - the type already says it - and no issue key or date.
+
+## The description, by type
+
+Write it in Jira wiki markup, not markdown: \`h3.\` for a heading, \`*\` and
+\`#\` at the start of a line for bullets and numbered steps, \`*bold*\`,
+\`{code}...{code}\` or \`{noformat}...{noformat}\` around logs and anything with
+braces, \`[text|url]\` for a link. Markdown arrives with its punctuation showing,
+and \`# Heading\` becomes a numbered list.
+
+**A bug** is something that worked, or should have, and does not:
+
+    h3. Steps to reproduce
+    # Add a gift card to the cart
+    # Pay with a saved card
+    h3. Expected
+    The order is placed.
+    h3. Actual
+    A 500, and the cart is emptied.
+    h3. Environment
+    UAT, build 2.4.0-rc2. Happens every time.
+    {noformat}
+    PaymentTimeoutException: no answer in 5000 ms
+    {noformat}
+
+What happened, what was expected, how to see it, where - in that order. Say how
+often, and who is affected, when you know; leave out what you do not.
+
+**A story** is a change somebody wants, written from where they stand:
+
+    As a returning customer I want my saved cards offered at checkout,
+    so that I do not type a card number twice.
+    h3. Acceptance criteria
+    * Saved cards are listed above the card form, newest first
+    * A card past its expiry date is not offered
+    * Choosing one fills nothing in the form
+    h3. Out of scope
+    Adding a card from the account page.
+
+Acceptance criteria are what a tester checks, one per line, each one true or
+false. "Works well" is not one.
+
+**A task** is work with no user-facing behaviour of its own: what to do, why
+now, and what done looks like - "Rotate the payment gateway key before 1
+November; done when the old key is revoked and checkout still passes on UAT."
+
+## The fields a project insists on
+
+A project can make fields of its own mandatory, and a create that leaves one
+out is refused, naming it. Do not guess at values. \`jira_form\` answers the
+whole form - every field by name, which are required, and the values each
+choice takes:
+
+    jira_form {"project": "PROJ", "type": "Bug"}
+
+Then pass them in \`fields\`, keyed by name and valued by label, the way the
+form spells them:
+
+    jira_createIssue {"project": "PROJ", "type": "Bug", "summary": "Checkout returns 500 when the cart holds a gift card", "description": "h3. Steps to reproduce\\n# ...", "fields": {"Priority": "High", "Component/s": "Checkout", "Labels": ["payments", "gift-cards"]}}
+
+- **Priority**: what the person said, or the project's middle value. Do not
+  raise it to get attention; a board where everything is High has no High.
+- **Labels** are free text, so a typo is a new label. Reuse the spelling that
+  is already there - \`labels = payments\` in a search shows whether it is.
+- **Components, versions, priority** are choices: a label that is not one is
+  refused with the ones that are.
+- **Assignee**: leave it empty unless asked. "me" is the connection's own
+  account; a name, username or email is looked up.
+- **Parent or epic** is a field like the rest - "Parent" on Cloud, usually
+  "Epic Link" on Server. \`jira_form\` says which this project has.
+
+## After it exists
+
+- **Link it** to what it depends on, blocks or duplicates:
+  \`jira_link {"from": "PROJ-130", "relation": "is blocked by", "to": "PROJ-98"}\`.
+  The relation is a verb as a person says it, matched against this Jira's link
+  types; one it does not have is refused with the ones it does.
+- **Attach the evidence** - a screenshot, a log file - with \`jira_attach\`
+  rather than pasting kilobytes into the description.
+- **Something forgotten** is \`jira_updateIssue\` on the issue, not a second
+  issue: \`{"key": "PROJ-130", "fields": {"Team": "Checkout"}}\`. Setting a list
+  field replaces it, so read the labels with \`jira_openIssue\` first and send
+  the old ones with the new.
+- **Answer with the key and the url** the create returned, so the person can
+  open it.`,
+      }),
+
+      new OrknuxSkill({
+        id: 'jira-moving-an-issue',
+        name: 'Moving a Jira issue through its workflow',
+        description:
+          'What to check before changing an issue\'s status, how transitions are named, and what to do when a move is refused.',
+        content: `# Moving a Jira issue through its workflow
+
+## Read it first
+
+    jira_openIssue {"key": "PROJ-123"}
+
+The summary is not the ticket. The status says where it is, the assignee
+whether somebody is already on it, the resolution whether it is already closed,
+and the description what "done" was supposed to mean. Moving an issue on the
+summary alone is how a ticket somebody else is halfway through ends up Done.
+
+## Move it by name
+
+    jira_transition {"key": "PROJ-123", "to": "In Progress"}
+
+\`to\` is the status you want it to land in, or the transition's own name
+("Start Progress", "Resolve Issue") - either matches, whatever the capitals.
+There is no id to find and none to guess: ids are numbers out of somebody's
+workflow configuration, and this tool reads the moves available right now and
+picks the one you named.
+
+Which moves exist depends on **where the issue is now**. A board may forbid
+"To Do" straight to "Done". A name that is not available is refused with the
+list of the ones that are:
+
+    PROJ-123 cannot be moved to Done from where it is: it takes Start Progress, Won't Do
+
+Pick from that list. Do not try synonyms one by one - every attempt is a
+call, and "Closed", "Complete" and "Resolved" are different statuses on
+different boards. If the target is further along, move one step at a time:
+each call answers the status the issue ended in, and the next refusal lists
+the next moves.
+
+## When a move needs a field
+
+A transition can have a screen with fields of its own - a resolution, a fix
+version, a time spent - and Jira refuses a move that leaves a required one
+out, naming it. This tool sends the move and nothing else, so:
+
+1. If the field is one the issue can be edited to have - Fix Version/s,
+   Assignee, a team - set it first with \`jira_updateIssue\`, then move again.
+2. If it is **Resolution**, it usually cannot be edited at all: Jira sets it
+   on the transition. If \`jira_updateIssue\` refuses it, stop and tell the
+   person which move needs which field. Do not reach for a different
+   transition that happens to land in a similar status to get around it.
+
+## Resolution is what "closed" means
+
+An issue is closed when it has a resolution, not when its status sounds
+final. Most boards set Fixed, Done or Won't Do on the way into the last
+column. After moving one to its end, \`jira_openIssue\` shows the resolution;
+if it is still null while the status says Done, mention it - searches for open
+work will keep finding that issue.
+
+Reopening clears the resolution on most boards; choose the transition the
+refusal lists ("Reopen", "Back to In Progress") rather than another one that
+lands there.
+
+## Say why
+
+Comment when you move something, in the same breath:
+
+    jira_comment {"key": "PROJ-123", "text": "Moved to In Review: fix is in [the pull request|https://github.com/acme/shop/pull/412]."}
+
+A status change with no comment is a mystery to whoever sees it in their
+morning filter. Jira comments are wiki markup - \`[text|url]\` for a link, not
+markdown.
+
+## Whose move it is
+
+Move issues you were asked to move, or ones the work you just did finished.
+Moving somebody else's ticket to Done, or back to To Do, because it looked
+stale is a decision for a person - say what you see and leave the move to them.`,
+      }),
+
+      new OrknuxSkill({
+        id: 'jira-triage',
+        name: 'Triaging a Jira backlog',
+        description:
+          'Going through many issues at once - finding the untriaged ones, spotting duplicates, setting priority and owners - without making a mess at scale.',
+        content: `# Triaging a Jira backlog
+
+Triage is the same few calls made many times, so a mistake is made many times
+too. Look before changing anything, and change in one pass.
+
+## 1. Find what needs it
+
+Untriaged usually means open and missing a priority, an owner or a component:
+
+    jira_search {"jql": "project = PROJ AND resolution = Unresolved AND (assignee is EMPTY OR component is EMPTY) AND created >= -30d ORDER BY created ASC", "limit": 50}
+
+Adjust to what the person called untriaged - a "Needs triage" status, a
+\`triage\` label, nothing in a sprint (\`sprint is EMPTY\`). An empty answer is
+more often a wrong status name than an empty backlog; drop a clause and look.
+
+## 2. Read each one
+
+A search does not answer descriptions, labels or links. \`jira_openIssue\`
+each issue before deciding anything about it - the summary of a bug is often
+not the bug.
+
+## 3. Look for duplicates
+
+For each, search a few distinctive words from it among the open issues:
+
+    jira_search {"jql": "project = PROJ AND resolution = Unresolved AND text ~ \\"gift card 500\\" AND key != PROJ-140"}
+
+Two issues are duplicates when fixing one would close the other, not when
+they share a word. When they are, link the newer to the older and say so:
+
+    jira_link {"from": "PROJ-140", "relation": "duplicates", "to": "PROJ-98"}
+
+Closing the duplicate is a move like any other - only if the person asked for
+it, and with a comment naming the one it duplicates.
+
+## 4. Propose before changing many
+
+Past a handful of issues, show the plan first - a short list of key, what you
+would set, and why - and change after the person agrees. Fifty updates made on
+a wrong reading of "urgent" are fifty updates somebody reverts by hand.
+
+## 5. Set what was agreed
+
+    jira_updateIssue {"key": "PROJ-140", "fields": {"Priority": "High", "Component/s": "Checkout", "Assignee": "alice@acme.com"}}
+
+- Field names and values are the ones the issue's own form has; a wrong one
+  is refused with the right ones, so one guess costs one call.
+- Setting Labels or Component/s **replaces** them. Send the existing values
+  with the new one, read off \`jira_openIssue\`.
+- An issue missing what is needed to triage it gets a comment asking the one
+  specific question - "Which build did this happen on?" - not a generic request
+  for more information.
+
+## 6. Report
+
+Say what changed, grouped: how many were prioritised, assigned, linked as
+duplicates, asked a question - with the keys. List the ones you left alone and
+why. "Everything else needed nothing" is a sentence, not a list of keys.`,
+      }),
+
+      new OrknuxSkill({
+        id: 'jira-timesheets',
+        name: 'Checking a team\'s timesheets in Jira',
+        description:
+          'Whether everybody in a team logged their hours, from Jira\'s work log - who is short, on which days.',
+        content: `# Checking a team's timesheets in Jira
+
+\`jira_timeLogged\` answers one person's logged time day by day.
+\`jira_groupMembers\` lists who is in a Jira group, so a team is one call and a
+check is a loop:
+
+    jira_groupMembers {"group": "team-checkout"}
+    jira_timeLogged {"user": "5b10ac8d82e05b22cc7d4ef5"}
+    jira_timeLogged {"user": "me", "from": "2026-09-14", "to": "2026-09-20"}
+
+Left out, \`from\` and \`to\` are last week, Monday to Sunday, which is what "did
+everyone log last week" means. Dates are YYYY-MM-DD and inclusive.
+
+1. \`jira_groupMembers\` for the team, then \`jira_timeLogged\` with each
+   person's \`id\`.
+2. Read \`days\`: every date is there, weekends included, and \`weekday\` says
+   which is which. A weekday with fewer hours than the team expects is a gap; a
+   Saturday with 0 is not. Ask what the team expects a day if nobody said -
+   eight and seven and a half are both common.
+3. Say who is short and on which days, with the hours they did log. Do not list
+   the people who are fine one by one - "everyone else is complete" is the
+   sentence.
+
+A gap is not an accusation: a day of 0 may be leave Jira knows nothing about.
+Say "nothing logged", not "did not work".
+
+Time is read from Jira's own work log. Where Tempo or another timesheet app is
+in use, its entries appear here too, but its approval state does not.`,
       }),
     ];
   }
@@ -1304,9 +1688,9 @@ is in use, its entries appear here too, but its approval state does not.`,
       new OrknuxFunction({
         name: 'comment',
         description:
-          'Adds a comment to an issue. Pass the key (PROJ-123) and what to say, as plain text - ' +
-          'Jira renders its own wiki markup, not markdown, so write plainly rather than in ' +
-          'asterisks. Answers the comment\'s id and a url to it.',
+          'Adds a comment to an issue. Pass the key (PROJ-123) and what to say, in Jira wiki ' +
+          'markup rather than markdown - *bold*, h3. for a heading, {code}...{code}, [text|url] - ' +
+          'because markdown arrives with its punctuation showing. Answers the comment\'s id and a url to it.',
         params: [
           { name: 'key', type: 'string' },
           { name: 'text', type: 'string' },
@@ -1446,7 +1830,7 @@ is in use, its entries appear here too, but its approval state does not.`,
         description:
           'Raises a new issue. Pass the project key (PROJ) - or an empty project for the configured ' +
           'one - the issue type by name ("Task", "Bug", "Story"), a one-line summary, and the ' +
-          'description as plain text. fields carries anything else the project asks for, keyed by ' +
+          'description in Jira wiki markup, not markdown. fields carries anything else the project asks for, keyed by ' +
           'field name as form lists it and valued by label - {"Occurs on": "DEV", "Priority": "High"}; ' +
           'a list takes a list or a comma-separated string. Answers the new issue\'s key and a url. ' +
           'Search first: raising a duplicate of something already open is worse than not raising it.',

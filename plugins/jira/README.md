@@ -13,7 +13,7 @@ behalf under `NETWORK_REQUEST` — the plugin never holds the token.
 |----------|---|
 | `search(jql, limit)` | Jira's own query language: `project = PROJ AND status = "In Progress"`, `assignee = currentUser() ORDER BY updated DESC`. |
 | `openIssue(key)` | One issue whole, description included, as text. Answers the `Issue` shape below rather than a bare map. |
-| `comment(key, text)` | A comment, as plain text. |
+| `comment(key, text)` | A comment, in Jira wiki markup - not markdown, which arrives with its punctuation showing. |
 | `attach(key, filename, base64 = "", contentKey = "")` | A file onto an issue - a rendered diagram, a PDF. An agent's tool takes only the `contentKey` the tool that made the bytes answered. |
 | `transition(key, to)` | Moves an issue — what dragging its card to another column does. |
 | `form(project, type)` | What a new issue of that type in that project has to say: every field by name, which are required, and the values each choice takes. |
@@ -153,6 +153,23 @@ call away before a second copy of a link gets made.
 short answer, and `fields`, a list of **`Field`**: `id`, `name`, `required`,
 `kind`, `of` for what an array holds, `allowed` for the labels a choice takes,
 and `hasDefault`.
+
+## The skills it brings
+
+Six pages an agent can load before it starts, because the decisions worth
+changing are made before the first call rather than at one:
+
+| id | |
+|---|---|
+| `finding-and-moving-jira-issues` | JQL: fields, operators, functions, and why an empty answer is usually a bad query. |
+| `jira-formatting` | Wiki markup for comments and descriptions - headings, lists, code, links, mentions, tables, panels - and the markdown habits that break it. |
+| `jira-raising-an-issue` | Searching first, and how a bug, a story and a task are each written, with the fields a project insists on. |
+| `jira-moving-an-issue` | Transitions by name, what to do when one is refused or needs a field, and resolution. |
+| `jira-triage` | Going through a backlog at scale: untriaged issues, duplicates, priority and owners. |
+| `jira-timesheets` | Whether a team logged its hours, from a group and its work log. |
+
+The first keeps the id it had when it was the only page, so anything already
+loading it by that id still finds it.
 
 ## Setting one up
 
