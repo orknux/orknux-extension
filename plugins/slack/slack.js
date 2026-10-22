@@ -12,8 +12,9 @@
  * with `IOAccess.NONE`, and `PluginPermission` is a closed list with no spelling
  * for a socket. So this asks the *server* to read the thread, under a capability
  * a person accepted, through a connection a workspace pointed it at. For all of
- * that surface the plugin never sees a token and could not use one; the two
- * upload functions are the exception, and the section below says why.
+ * that surface the plugin never sees a token and could not use one, uploads
+ * included; the readers that list channels and fetch attachments are the
+ * exception, and the section below says why.
  *
  * ## Setting one up
  *
@@ -43,17 +44,23 @@
  *
  * ## Uploading files
  *
- * The server's capability vocabulary has no spelling for "put a file on Slack",
- * so `upload` and `remoteFile` cannot go through a connection the way the rest
- * of this file does. They go the way the github plugin goes instead: under
- * NETWORK_REQUEST, straight at Slack's Web API, with a bot token the workspace
- * puts in the `botToken` parameter — a secret, so it lives in a variable. Both
- * check for it and say so when it is missing; a workspace that never uploads
- * never sets it, and the rest of the plugin still runs tokenless.
+ * Through the connection, under SLACK_UPLOAD_FILE, like everything else here:
+ * the server holds the bot token and makes Slack's upload calls itself, so a
+ * workspace keeps that token once, on its Slack connection. Uploads go through
+ * the configured `slack` connection, and `post` hangs its attachments through
+ * the connection it posts through.
+ *
+ * Until the server had that door this went the way the github plugin goes -
+ * under NETWORK_REQUEST, straight at Slack's Web API, with a copy of the bot
+ * token in the `botToken` parameter - and that path is still here, used only
+ * where the capability has not been granted yet and `botToken` is set, so an
+ * installation that updates the plugin before accepting the new grant keeps
+ * uploading. `botToken` itself stays for the readers further down, which call
+ * Web API methods no capability fronts.
  *
  * What each is for follows from the shapes a sandbox can hold — text, and
- * bytes wearing base64, which is what the http door's `upload` and `download`
- * carry them as:
+ * bytes wearing base64, which is what the upload door and the http door's
+ * `download` carry them as:
  *
  * - `upload` puts *text content* on Slack — a CSV, a log, a mermaid source —
  *   through the external upload flow (`files.getUploadURLExternal`, the upload
@@ -67,7 +74,7 @@
  *   shows a card, under `remote_files:write` and `remote_files:share`. The
  *   right door when the bytes should stay where they are, or exceed the caps.
  *
- * Reading goes through the same door, and the same shapes come back:
+ * Reading goes over NETWORK_REQUEST with `botToken`, and the same shapes come back:
  * `listAttachments` says what files hang on a message (`files:read`, and the
  * history scope of the conversation), and `readAttachment` brings one back —
  * text as text, and binary as base64.
@@ -111,7 +118,7 @@ function at(holder, name) {
 function tokenOf(settings) {
   const token = settings.botToken;
   if (typeof token !== 'string' || token.length === 0) {
-    throw new Error("the plugin's botToken parameter is not set, and uploading needs it");
+    throw new Error("the plugin's botToken parameter is not set, and this needs it");
   }
   if (token.startsWith('xoxp-')) {
     orknux.log.warn(
@@ -148,6 +155,65 @@ function slackApi(settings, method, args) {
     throw new Error(`Slack refused ${method}: ${typeof said === 'string' ? said : `status ${answered.status}`}`);
   }
   return answered.json;
+}
+
+/** Whether `botToken` holds anything, without the warnings reading it brings. */
+function hasBotToken(settings) {
+  return typeof settings.botToken === 'string' && settings.botToken.length > 0;
+}
+
+/**
+ * Whether a refusal was the upload door not being granted, rather than Slack
+ * or the connection saying no - the one refusal `botToken` may stand in for.
+ */
+function unoffered(error) {
+  return typeof error === 'string' && /not granted SLACK_UPLOAD_FILE|cannot upload files to Slack/.test(error);
+}
+
+/**
+ * Whether a file can go through a connection (true), only with `botToken`
+ * (false) - or thrown, in a sentence saying what to set, when neither is
+ * there. Asked before anything is fetched, so nowhere to put a file costs
+ * nothing.
+ */
+function uploadable(settings, connection, door) {
+  const named = connection || settings.slack;
+  if (named && typeof orknux.slack[door] === 'function') return true;
+  if (hasBotToken(settings)) return false;
+  throw new Error(
+    named
+      ? "this server cannot put files on Slack through a connection, and the plugin's botToken parameter is not set"
+      : "there is no Slack to upload through: pass the connection, or point the plugin's slack parameter at one",
+  );
+}
+
+/**
+ * A file put on Slack through a connection, by the server, with that
+ * connection's own token - or null where it has to go the old way, with
+ * `botToken`.
+ *
+ * Null only where the door is not there for this plugin (not granted yet) and
+ * `botToken` is set: an installation that updated before accepting the new
+ * grant keeps uploading the way it did. Every other refusal is the answer -
+ * a scope Slack wants, a channel the bot is not in - and falling back to a
+ * second token would only ask the same Slack the same question again.
+ *
+ * @param door `upload` or `remoteFile`, the two calls the grant covers.
+ */
+function viaConnection(settings, connection, door, file) {
+  if (!uploadable(settings, connection, door)) return null;
+  const answered = through((use) => orknux.slack[door](use, file), connection, settings.slack);
+  if (answered.error === undefined) {
+    return { id: at(answered, 'id'), permalink: at(answered, 'permalink') };
+  }
+  if (unoffered(answered.error) && hasBotToken(settings)) {
+    orknux.log.warn(
+      'SLACK_UPLOAD_FILE is not granted to this plugin, so this upload used the botToken parameter. ' +
+        'Accept the grant and the connection\'s own token is used instead.',
+    );
+    return null;
+  }
+  throw new Error(`could not put ${file.filename || file.url} on Slack: ${answered.error}`);
 }
 
 /**
@@ -280,13 +346,22 @@ function putOrThrow(put) {
 /** Base64 as a validator reads it: whole quads, padding only at the end. */
 const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-function uploadedText(settings, filename, content, channel, comment, threadTs) {
+function uploadedText(settings, filename, content, channel, comment, threadTs, connection) {
   if (typeof filename !== 'string' || filename.length === 0) {
     throw new Error('an upload needs a filename');
   }
   if (typeof content !== 'string' || content.length === 0) {
     throw new Error('there is no content to upload');
   }
+
+  const hosted = viaConnection(settings, connection, 'upload', {
+    filename: filename,
+    content: content,
+    channel: channel || undefined,
+    comment: comment || undefined,
+    threadTs: threadTs || undefined,
+  });
+  if (hosted !== null) return hosted;
 
   const opened = slackApi(settings, 'files.getUploadURLExternal', {
     filename: filename,
@@ -306,7 +381,7 @@ function uploadedText(settings, filename, content, channel, comment, threadTs) {
 }
 
 /** Bytes, passed as base64, put on Slack the same way. */
-function uploadedBytes(settings, filename, base64, channel, comment, threadTs) {
+function uploadedBytes(settings, filename, base64, channel, comment, threadTs, connection) {
   if (typeof filename !== 'string' || filename.length === 0) {
     throw new Error('an upload needs a filename');
   }
@@ -314,6 +389,15 @@ function uploadedBytes(settings, filename, base64, channel, comment, threadTs) {
   if (packed.length === 0) {
     throw new Error('there are no bytes to upload');
   }
+
+  const hosted = viaConnection(settings, connection, 'upload', {
+    filename: filename,
+    base64: packed,
+    channel: channel || undefined,
+    comment: comment || undefined,
+    threadTs: threadTs || undefined,
+  });
+  if (hosted !== null) return hosted;
 
   /*
    * Slack is told the length in decoded bytes, which base64 carries in its
@@ -332,11 +416,11 @@ function uploadedBytes(settings, filename, base64, channel, comment, threadTs) {
 }
 
 /** A file fetched from a url and put on Slack, so the workspace holds it. */
-function uploadedFromUrl(settings, url, filename, channel, comment, threadTs) {
+function uploadedFromUrl(settings, url, filename, channel, comment, threadTs, connection) {
   if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
     throw new Error('a file is fetched by its http(s) url, and none was passed');
   }
-  tokenOf(settings); // before the fetch, so a missing token costs nothing
+  uploadable(settings, connection, 'upload'); // before the fetch, so nowhere to put it costs nothing
 
   const got = orknux.http.download(url);
   if (got.error !== undefined) {
@@ -350,6 +434,16 @@ function uploadedFromUrl(settings, url, filename, channel, comment, threadTs) {
     typeof filename === 'string' && filename.length > 0
       ? filename
       : namedFromUrl(url, got.contentType);
+
+  const hosted = viaConnection(settings, connection, 'upload', {
+    filename: named,
+    base64: got.base64,
+    channel: channel || undefined,
+    comment: comment || undefined,
+    threadTs: threadTs || undefined,
+  });
+  if (hosted !== null) return hosted;
+
   const opened = slackApi(settings, 'files.getUploadURLExternal', {
     filename: named,
     length: got.size,
@@ -616,8 +710,9 @@ function inline(text, parked) {
  *
  * A string is a file already on Slack and is used as it is - the cheap path,
  * and the one that needs no token at all. A map is a file that does not exist
- * yet: it is uploaded here, with `botToken`, and what comes back is its
- * permalink, so both kinds end up in the same list.
+ * yet: it is uploaded here, through the connection the message is posted
+ * through - a permalink from one Slack means nothing in another - and what
+ * comes back is its permalink, so both kinds end up in the same list.
  *
  * Uploaded *without* a channel, deliberately. Sharing at upload time makes
  * Slack post the file as its own message, which is a second message nobody
@@ -625,7 +720,7 @@ function inline(text, parked) {
  * the message that follows is Slack's own way of hanging a file on a message
  * somebody wrote.
  */
-function attaching(settings, attachments) {
+function attaching(settings, attachments, connection) {
   if (!Array.isArray(attachments)) {
     return [];
   }
@@ -659,7 +754,7 @@ function attaching(settings, attachments) {
             'key that answer carried',
         );
       }
-      hosted = uploadedBytes(settings, named, held, '', '', '');
+      hosted = uploadedBytes(settings, named, held, '', '', '', connection);
     } else if (typeof base64 === 'string') {
       /*
        * Still here, for the workflow node that has bytes and no session to
@@ -667,11 +762,11 @@ function attaching(settings, attachments) {
        * see `tools()` - because a model always has a key and typing bytes into
        * a tool call is the thing that does not survive.
        */
-      hosted = uploadedBytes(settings, named, base64, '', '', '');
+      hosted = uploadedBytes(settings, named, base64, '', '', '', connection);
     } else if (typeof content === 'string') {
-      hosted = uploadedText(settings, named, content, '', '', '');
+      hosted = uploadedText(settings, named, content, '', '', '', connection);
     } else if (typeof url === 'string') {
-      hosted = uploadedFromUrl(settings, url, named, '', '', '');
+      hosted = uploadedFromUrl(settings, url, named, '', '', '', connection);
     } else {
       throw new Error(
         'an attachment map says which file by contentKey, content or url, and none was set',
@@ -1248,12 +1343,12 @@ export default class Slack extends OrknuxPlugin {
       new OrknuxParameter({
         name: 'botToken',
         description:
-          'A bot token (xoxb-) for the two upload functions, with files:write - and ' +
-          'remote_files:write and remote_files:share for remoteFile. Everything else here runs ' +
-          'without it, and post needs it only when an attachment is a file to upload rather ' +
-          'than a permalink. It must be the bot\'s own: a user token (xoxp-) works, but Slack ' +
-          'then shows every uploaded file as posted by that person rather than by the bot - a ' +
-          'user token for search goes in userToken instead.',
+          'A bot token (xoxb-) for the functions that call Slack\'s Web API themselves - finding ' +
+          'channels and threads, and listAttachments and readAttachment, with files:read. ' +
+          'Uploads do not need it: they go through the Slack connection and its own token, and ' +
+          'fall back to this only while the plugin has not been granted SLACK_UPLOAD_FILE. It ' +
+          'must be the bot\'s own: a user token (xoxp-) works, but Slack then shows what it does ' +
+          'as done by that person - a user token for search goes in userToken instead.',
         type: 'string',
         required: false,
         secret: true,
@@ -1273,9 +1368,10 @@ export default class Slack extends OrknuxPlugin {
   }
 
   permissions() {
-    // TextEncoder, for `upload` alone: Slack is told the file's length in
-    // bytes, and the byte length of text is a fact about its UTF-8 encoding,
-    // not about its character count.
+    // TextEncoder, for `upload` on the botToken path alone: Slack is told the
+    // file's length in bytes, and the byte length of text is a fact about its
+    // UTF-8 encoding, not about its character count. Through the connection
+    // the server counts them.
     return ['TEXT_ENCODING'];
   }
 
@@ -1289,8 +1385,11 @@ export default class Slack extends OrknuxPlugin {
       'SLACK_ADD_REACTION',
       'SLACK_SEARCH',
       'SLACK_SUGGEST',
-      // For the two upload functions only, which the capability vocabulary has
-      // no narrower spelling for — the header says why.
+      // Every upload, through the connection and its own token.
+      'SLACK_UPLOAD_FILE',
+      // For the readers that call Web API methods no capability fronts, for
+      // uploadFromUrl's fetch, and for the botToken path uploads fall back to
+      // until SLACK_UPLOAD_FILE is granted — the header says why.
       'NETWORK_REQUEST',
     ];
   }
@@ -2338,7 +2437,7 @@ it notifies nobody else.`,
           'then goes in a later post\'s attachments. Slack hosts what it is given but draws only pictures ' +
           'in a message - an SVG arrives as a file card, so upload a PNG where somebody should see it. ' +
           'This call posts a message - the comment is its text. Your own answer is posted to the same conversation as well, by the run rather than by you, so whatever you say after this call arrives as a SECOND message. Caption the file in the comment - that is your message to them, and it is sent the moment this call returns. Then END THE TURN WITH finish_answer, which stops your answer going out after it as a second message. Its own answer argument is for a later step of the workflow rather than for the reader, so leave it out unless something downstream needs it. Write a real answer instead where finish_answer is not among your tools, or where you have something the comment did not say - what to look at, what you could not do, what you would do next. Never write that you have nothing to add, and never answer with nothing at all: an empty answer is read as a failed turn and does the work again, which is how a channel ends up with the same picture twice. ' +
-          'Answers the file\'s id and permalink. Needs the botToken parameter.',
+          'Answers the file\'s id and permalink.',
         params: [
           { name: 'channel', type: 'string' },
           { name: 'filename', type: 'string' },
@@ -2423,7 +2522,7 @@ it notifies nobody else.`,
           'a threadTs - or an empty channel to only upload, whose permalink then goes in a later ' +
           'post\'s attachments. upload takes the same keys, text or bytes, and is the one to reach ' +
           'for. Answers the file\'s id and ' +
-          'permalink. Needs the botToken parameter.',
+          'permalink.',
         params: [
           { name: 'channel', type: 'string' },
           { name: 'filename', type: 'string' },
@@ -2906,7 +3005,7 @@ it notifies nobody else.`,
           'file already on Slack (as an event or readThread carries it), or a map for one that is ' +
           'not there yet - {filename, content} for text like a CSV, {filename, base64} for bytes ' +
           'like a PDF (pdf_fromHtml answers base64 ready for this), or {url} to copy a file from a ' +
-          'url. The maps upload first and need the botToken parameter; permalinks need nothing. ' +
+          'url. The maps are uploaded first, through the same connection; permalinks need nothing. ' +
           'Pass an empty array for ' +
           'none. Pass the connection the event came in on, or an empty string to use the configured ' +
           'one. An empty string is always safe: a connection named by an older event may since have been deleted. This call posts a message - text is its words. Your own answer is posted to the same conversation as well, by the run rather than by you, so whatever you say after this call arrives as a SECOND message. Say it once, here, then end the turn with finish_answer so your answer is not sent after it as a second message - leaving its answer argument out, since that is for a later step of the workflow and not for the reader. Write a real answer instead where finish_answer is not among your tools, or where you have something this message did not say, and never answer with nothing at all - that is read as a failed turn and the work is done again. Answers the channel and the new message\'s ts.',
@@ -2924,7 +3023,7 @@ it notifies nobody else.`,
            * the file's permalink - that is Slack's own mechanism, so linking a
            * file that is already there needs nothing beyond SLACK_POST_MESSAGE.
            * A file that is *not* there yet is put there first, which is the
-           * part that needs `botToken`. The `| ` label keeps the raw
+           * part that needs SLACK_UPLOAD_FILE. The `| ` label keeps the raw
            * url out of the text people read; the preview still unfurls.
            */
           /*
@@ -2934,7 +3033,7 @@ it notifies nobody else.`,
            * arrives as the bold and the links it was meant to be.
            */
           let said = mrkdwn(text);
-          const linked = attaching(this.settings, attachments);
+          const linked = attaching(this.settings, attachments, connection);
           if (linked.length > 0) {
             said = `${said}${linked.map((one) => ` <${one}| >`).join('')}`;
           }
@@ -3382,8 +3481,7 @@ it notifies nobody else.`,
           'way; give remoteFile its url instead. Where a tool answered a key for what it made, ' +
           'PASS THAT as contentKey and leave content empty: the bytes are taken off the server ' +
           'instead of out of what you type back, which is the one thing that stops a long file ' +
-          'arriving truncated. Answers the file\'s id and permalink. Needs the botToken ' +
-          'parameter.',
+          'arriving truncated. Answers the file\'s id and permalink.',
         params: [
           { name: 'channel', type: 'string' },
           { name: 'filename', type: 'string' },
@@ -3459,7 +3557,7 @@ it notifies nobody else.`,
           'chart.png), the channel id, what the sharing message should say, and a threadTs - or an ' +
           'empty channel to only upload. upload takes the same keys, text or bytes, and is the one ' +
           'to reach for. Answers the file\'s id and ' +
-          'permalink. Needs the botToken parameter.',
+          'permalink.',
         params: [
           { name: 'channel', type: 'string' },
           { name: 'filename', type: 'string' },
@@ -3503,7 +3601,7 @@ it notifies nobody else.`,
           'message should say, and a threadTs - or an empty channel to only upload. ' +
           'This call posts a message - the comment is its text. Your own answer is posted to the same conversation as well, by the run rather than by you, so whatever you say after this call arrives as a SECOND message. Caption the file in the comment - that is your message to them, and it is sent the moment this call returns. Then END THE TURN WITH finish_answer, which stops your answer going out after it as a second message. Its own answer argument is for a later step of the workflow rather than for the reader, so leave it out unless something downstream needs it. Write a real answer instead where finish_answer is not among your tools, or where you have something the comment did not say - what to look at, what you could not do, what you would do next. Never write that you have nothing to add, and never answer with nothing at all: an empty answer is read as a failed turn and does the work again, which is how a channel ends up with the same picture twice. ' +
           'Answers the ' +
-          'file\'s id and permalink. Needs the botToken parameter.',
+          'file\'s id and permalink.',
         params: [
           { name: 'channel', type: 'string' },
           { name: 'url', type: 'string' },
@@ -3526,8 +3624,8 @@ it notifies nobody else.`,
           'shows a preview card; the bytes stay where they are, so the url must be reachable by ' +
           'whoever clicks. Pass the file\'s url, a title people will see, the channel id to share ' +
           'into - or empty to only register - and filetype as Slack\'s own kind string (pdf, png, ' +
-          'csv), empty to let Slack guess. Answers the file\'s id and permalink. Needs the botToken ' +
-          'parameter, with the remote_files scopes.',
+          'csv), empty to let Slack guess. Answers the file\'s id and permalink. The bot needs the ' +
+          'remote_files scopes.',
         params: [
           { name: 'channel', type: 'string' },
           { name: 'url', type: 'string' },
@@ -3540,10 +3638,19 @@ it notifies nobody else.`,
             throw new Error('a remote file needs the http(s) url it lives at');
           }
 
+          const hosted = viaConnection(this.settings, '', 'remoteFile', {
+            url: url,
+            title: title || undefined,
+            filetype: filetype || undefined,
+            channel: channel || undefined,
+          });
+          if (hosted !== null) return hosted;
+
           /*
            * The url is its own external_id: registration is idempotent per id,
            * so registering the same document twice updates rather than
-           * duplicates, and sharing needs no id kept anywhere.
+           * duplicates, and sharing needs no id kept anywhere. The server's
+           * door does the same; this is the botToken path it replaced.
            */
           const added = slackApi(this.settings, 'files.remote.add', {
             external_id: url,

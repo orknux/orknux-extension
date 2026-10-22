@@ -51,13 +51,14 @@ exception is `toSlack`, which reaches nothing and so is told nothing.
 
 ### Files out
 
-All four need `botToken`. Which one you want follows from the shape the content
-is in:
+All four go through the `slack` connection, with its own bot token, under
+`SLACK_UPLOAD_FILE` — there is no second token to set. Which one you want
+follows from the shape the content is in:
 
 | Function | For |
 |---|---|
 | `upload(channel, filename, content, comment, threadTs, contentKey)` | **Any file** Slack will host. Answers the file's `id` and `permalink`. An empty `channel` uploads without sharing, and the permalink then goes into a later `post`'s `attachments`. **The two surfaces differ:** agents pass a `contentKey` and nothing else - the server records whether a key holds text or bytes (`orknux.session.store.kind`), so one tool uploads either as what it is; the workflow function still takes `content`, because a workflow has no session to keep a key in. |
-| `uploadBinary(channel, filename, …, comment, threadTs)` | **Bytes** Slack will host — a PDF, a rendered diagram. Up to the http door's 10 MB. **The two surfaces differ:** agents pass a `contentKey` and have no base64 argument at all; the workflow function still takes `base64`, because a workflow has no session and so never had a key. See *Two surfaces* below. |
+| `uploadBinary(channel, filename, …, comment, threadTs)` | **Bytes** Slack will host — a PDF, a rendered diagram. Up to 10 MB. **The two surfaces differ:** agents pass a `contentKey` and have no base64 argument at all; the workflow function still takes `base64`, because a workflow has no session and so never had a key. See *Two surfaces* below. |
 | `uploadFromUrl(channel, url, filename, comment, threadTs)` | **Copying a file from a url onto Slack**, so the channel holds the file rather than a link. Fetches up to 5 MB. An empty `filename` is derived from the url and its content type. |
 | `remoteFile(channel, url, title, filetype)` | **Pointing at a url without copying it.** Slack keeps a pointer and shows a card. The right door when the bytes should stay where they are, or exceed the caps above. |
 
@@ -271,7 +272,7 @@ It posts through the configured `slack` parameter and answers `ts` and
 | Name | |
 |---|---|
 | `slack` | A `SLACK` connection: the Slack to read through when a function is not handed one. Optional. |
-| `botToken` | A **bot** token (`xoxb-`), **secret**. The four file functions, `readAttachment`, and `post` when an attachment is a file rather than a permalink. |
+| `botToken` | A **bot** token (`xoxb-`), **secret**. The functions that call Slack's Web API themselves — `findUsers`, `findRecent`, the channel and thread listings, `listAttachments` and `readAttachment`. Not uploads: those use the connection's own token, and fall back to this only while `SLACK_UPLOAD_FILE` has not been granted. |
 | `userToken` | A **user** token (`xoxp-`), **secret**. `search` alone — see *Two tokens* below. Optional: without it, search falls back to the connection's own User Token field. |
 
 ## Attaching a file to a message
@@ -283,7 +284,7 @@ whether the file is on Slack already:
 // Already there — a permalink an event or readThread carried. Costs nothing.
 post(conn, 'C123', 'here it is', '', ['https://acme.slack.com/files/U1/F2/report.pdf'])
 
-// Not there yet — uploaded first, with botToken, then attached.
+// Not there yet — uploaded first, through the same connection, then attached.
 post(conn, 'C123', 'this quarter', '', [
   { filename: 'q3.csv',    content: 'region,revenue
 EMEA,41000' },
@@ -293,7 +294,8 @@ EMEA,41000' },
 ```
 
 A string is used as it is and needs no token at all. A map is a file that does
-not exist yet: it is uploaded with `botToken` and its permalink goes into the
+not exist yet: it is uploaded through the connection the message is posted
+through, and its permalink goes into the
 message with the others, so both kinds end up in one message.
 
 **The upload deliberately does not share to the channel.** Sharing at upload
@@ -363,7 +365,7 @@ as the skill says, a real line break is the only thing that is one.
 
 | | |
 |---|---|
-| `botToken` | `xoxb-`. Uploads files **as the bot**, under the bot's name and picture. |
+| `botToken` | `xoxb-`. Reads what no capability fronts **as the bot** — and uploads, only while `SLACK_UPLOAD_FILE` is not granted. |
 | `userToken` | `xoxp-`. Runs `search`, which Slack will not answer for a bot at all: `search.messages` refuses a bot token with `not_allowed_token_type`. |
 
 They used to share a field, and the failure mode was quiet: somebody needs
@@ -390,22 +392,24 @@ workspace with one Slack wants and one fewer thing to wire.
 
 ## What it asks for, and why
 
-`TEXT_ENCODING`, for the byte length a file upload declares — the length of
-text is a fact about its UTF-8 encoding, not its character count.
+`TEXT_ENCODING`, for the byte length a file upload on the `botToken` path
+declares — the length of text is a fact about its UTF-8 encoding, not its
+character count.
 
-Eight Slack capabilities, one per call: `SLACK_READ_THREAD`,
+Nine Slack capabilities, one per call: `SLACK_READ_THREAD`,
 `SLACK_READ_MESSAGE`, `SLACK_READ_USER`, `SLACK_MENTION`,
-`SLACK_POST_MESSAGE`, `SLACK_ADD_REACTION`, `SLACK_SEARCH`, `SLACK_SUGGEST`.
-Each is the server
-making one call for the plugin; the plugin never sees a token and could not use
-one.
+`SLACK_POST_MESSAGE`, `SLACK_ADD_REACTION`, `SLACK_SEARCH`, `SLACK_SUGGEST`,
+and `SLACK_UPLOAD_FILE` for every upload and remote file - `post`'s file
+attachments included. Each is the server making one call for the plugin; the
+plugin never sees a token and could not use one.
 
-`NETWORK_REQUEST` — **for the functions that hold a token.** The server's
-capability vocabulary has no spelling for "put a file on Slack", so the file
-functions go straight at Slack's Web API with `botToken`; `post` joins them
-when an attachment is a file rather than a permalink, and `search` does when
-`userToken` is set. Everything else here runs on capabilities and never sees a
-credential.
+`NETWORK_REQUEST` — **for the functions that hold a token.** The readers that
+call Web API methods no capability fronts go straight at Slack with `botToken`,
+`search` does when `userToken` is set, and `uploadFromUrl` fetches its url
+through it. Uploads used to go this way too, with a copy of the bot token, and
+still do while `SLACK_UPLOAD_FILE` has not been granted and `botToken` is set -
+so updating the plugin before accepting the new grant stops nothing. Accept it
+and uploads need no `botToken` at all.
 
 ### Slack-side scopes
 

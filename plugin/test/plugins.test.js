@@ -687,8 +687,8 @@ test('the slack plugin declares what the server would accept', async () => {
   assert.equal(inspected.parameters[0].connectionType, 'SLACK');
   assert.equal(inspected.parameters[0].required, false);
   /*
-   * Two tokens, because Slack needs two: a bot token uploads files as the bot,
-   * and search will not answer to one at all. Both secret, both optional — a
+   * Two tokens, because Slack needs two: a bot token reads what no capability
+   * fronts, and search will not answer to one at all. Both secret, both optional — a
    * workspace that only reads and posts sets neither.
    */
   assert.equal(inspected.parameters[1].name, 'botToken');
@@ -708,6 +708,7 @@ test('the slack plugin declares what the server would accept', async () => {
     'SLACK_ADD_REACTION',
     'SLACK_SEARCH',
     'SLACK_SUGGEST',
+    'SLACK_UPLOAD_FILE',
     'NETWORK_REQUEST',
   ]);
   assert.deepEqual(
@@ -996,10 +997,10 @@ test('the agents post refuses an attachment carrying bytes', async () => {
     'a key goes down the key path, and says so when it names nothing',
   );
 
-  /* And the function takes the bytes its tool refuses, reaching the token check. */
+  /* And the function takes the bytes its tool refuses, reaching the question of where to upload. */
   assert.throws(
     () => behind.run('', 'C1', 'hi', '', [{ filename: 'a.png', base64: 'UE5H' }]),
-    /botToken parameter is not set/,
+    /no Slack to upload through/,
     'the workflow surface still carries bytes',
   );
 });
@@ -1036,7 +1037,7 @@ test('the agents uploadBinary takes a key and has nowhere to put bytes', async (
   try {
     assert.throws(
       () => tool.run('C1', 'report.pdf', 'pdf.abc', 'here', ''),
-      /botToken parameter is not set/,
+      /no Slack to upload through/,
       'the key resolved and the upload was attempted',
     );
   } finally {
@@ -3632,12 +3633,12 @@ test('anki answers only the due cards it was given, and says why it skipped the 
   }
 });
 
-test('a slack upload without a bot token is a thrown sentence, not a request', async () => {
+test('a slack upload with nowhere to go is a thrown sentence, not a request', async () => {
   /*
-   * The token is optional at load so the tokenless surface can stand alone —
-   * which makes "unset but called" a case both upload functions have to
-   * answer well: with the parameter's name, before anything reaches for the
-   * network.
+   * Both the connection and the token are optional at load so the plugin
+   * can stand alone - which makes "neither set but called" a case every
+   * upload function has to answer well: with what to set, before anything
+   * reaches for the network.
    */
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
@@ -3646,12 +3647,12 @@ test('a slack upload without a bot token is a thrown sentence, not a request', a
   const upload = functions.find((one) => one.name === 'upload');
   assert.throws(
     () => upload.run('C1', 'report.csv', 'a,b\n1,2', '', ''),
-    /botToken parameter is not set/,
+    /no Slack to upload through/,
   );
   const remote = functions.find((one) => one.name === 'remoteFile');
   assert.throws(
     () => remote.run('C1', 'https://example.com/report.pdf', 'The report', 'pdf'),
-    /botToken parameter is not set/,
+    /no Slack to upload through/,
   );
   /* And a remote file that has no url is refused before any of that. */
   assert.throws(() => remote.run('C1', 'not a url', '', ''), /needs the http\(s\) url/);
@@ -3661,16 +3662,107 @@ test('a slack upload without a bot token is a thrown sentence, not a request', a
   assert.throws(() => uploadTool.run('C1', 'report.pdf', '', '', ''), /upload takes a contentKey/);
 
   const binary = functions.find((one) => one.name === 'uploadBinary');
-  assert.throws(() => binary.run('C1', 'a.pdf', 'JVBERi0=', '', ''), /botToken parameter is not set/);
+  assert.throws(() => binary.run('C1', 'a.pdf', 'JVBERi0=', '', ''), /no Slack to upload through/);
   assert.throws(() => binary.run('C1', 'a.pdf', '   ', '', ''), /no bytes to upload/);
 
-  /* The fetch-and-host door refuses a missing url, then a missing token — before fetching anything. */
+  /* The fetch-and-host door refuses a missing url, then nowhere to put it — before fetching anything. */
   const copied = functions.find((one) => one.name === 'uploadFromUrl');
   assert.throws(() => copied.run('C1', 'not a url', '', '', ''), /fetched by its http\(s\) url/);
   assert.throws(
     () => copied.run('C1', 'https://mermaid.ink/img/abc', '', '', ''),
-    /botToken parameter is not set/,
+    /no Slack to upload through/,
   );
+});
+
+test('slack uploads go through the connection, and botToken only while the grant is missing', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+  const made = (settings) => {
+    const plugin = Object.create(Slack.prototype);
+    Object.defineProperty(plugin, 'settings', { value: Object.freeze(settings) });
+    return (name) => plugin.functions().find((one) => one.name === name);
+  };
+  /* What crosses is JSON, so a key left undefined is a key not sent. */
+  const sent = (file) => JSON.parse(JSON.stringify(file));
+  const slack = { id: 7, type: 'SLACK' };
+
+  const asked = [];
+  const requested = [];
+  let answer = { id: 'F1', permalink: 'https://acme.slack.com/files/U1/F1/a.csv' };
+  const held = { ...globalThis.orknux.slack };
+  const door = globalThis.orknux.http.request;
+  try {
+    globalThis.orknux.slack.upload = (connection, file) => {
+      asked.push(['upload', connection, sent(file)]);
+      return answer;
+    };
+    globalThis.orknux.slack.remoteFile = (connection, file) => {
+      asked.push(['remoteFile', connection, sent(file)]);
+      return answer;
+    };
+    globalThis.orknux.slack.post = (connection, channel, text) => {
+      asked.push(['post', connection, channel, text]);
+      return { channel, ts: '1.2' };
+    };
+    globalThis.orknux.http.request = (what) => {
+      requested.push(what);
+      return { error: 'the test reaches no network' };
+    };
+
+    /* Text, through the configured connection, with nothing but the file crossing. */
+    const call = made({ slack: slack });
+    assert.deepEqual(call('upload').run('C1', 'a.csv', 'a,b', 'here', '1.0'), answer);
+    assert.deepEqual(asked.pop(), [
+      'upload',
+      slack,
+      { filename: 'a.csv', content: 'a,b', channel: 'C1', comment: 'here', threadTs: '1.0' },
+    ]);
+
+    /* Bytes, as base64 without the line breaks; an empty channel only uploads. */
+    call('uploadBinary').run('', 'a.pdf', 'JVBE\nRi0=', '', '');
+    assert.deepEqual(asked.pop()[2], { filename: 'a.pdf', base64: 'JVBERi0=' });
+
+    /* A remote file through the same grant. */
+    call('remoteFile').run('C1', 'https://example.com/r.pdf', 'The report', 'pdf');
+    assert.deepEqual(asked.pop(), [
+      'remoteFile',
+      slack,
+      { url: 'https://example.com/r.pdf', title: 'The report', filetype: 'pdf', channel: 'C1' },
+    ]);
+
+    /* post uploads its file attachments through the connection it posts through. */
+    const other = { id: 9, type: 'SLACK' };
+    call('post').run(other, 'C1', 'see', '', [{ filename: 'q.csv', content: 'x' }]);
+    const [uploaded, posted] = asked.splice(0);
+    assert.equal(uploaded[1], other);
+    assert.equal(posted[1], other);
+    assert.match(posted[3], /<https:\/\/acme\.slack\.com\/files\/U1\/F1\/a\.csv\| >$/);
+
+    /* Slack's own refusal is the answer; a second token would ask the same Slack again. */
+    answer = { error: 'missing_scope' };
+    assert.throws(
+      () => made({ slack: slack, botToken: 'xoxb-t' })('upload').run('C1', 'a.csv', 'a,b', '', ''),
+      /could not put a\.csv on Slack: missing_scope/,
+    );
+    assert.equal(requested.length, 0, 'botToken was not tried behind a real refusal');
+
+    /* Not granted yet: botToken carries the upload the way it always did. */
+    answer = { error: 'this plugin was not granted SLACK_UPLOAD_FILE' };
+    assert.throws(
+      () => made({ slack: slack, botToken: 'xoxb-t' })('upload').run('C1', 'a.csv', 'a,b', '', ''),
+      /could not reach Slack: the test reaches no network/,
+    );
+    assert.equal(requested.pop().url, 'https://slack.com/api/files.getUploadURLExternal');
+
+    /* Not granted and no token: the refusal says which grant. */
+    assert.throws(
+      () => made({ slack: slack })('upload').run('C1', 'a.csv', 'a,b', '', ''),
+      /not granted SLACK_UPLOAD_FILE/,
+    );
+  } finally {
+    Object.assign(globalThis.orknux.slack, held);
+    globalThis.orknux.http.request = door;
+  }
 });
 
 test('an ungranted slack call from a shipped plugin is a thrown sentence, not a guess', async () => {
