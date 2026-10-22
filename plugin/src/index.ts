@@ -121,6 +121,7 @@ export type {
   OrknuxValues,
   OrknuxValueType,
   SlackConnectionArgument,
+  SlackHostedFile,
   SlackLinkedMessage,
   SlackMention,
   SlackPost,

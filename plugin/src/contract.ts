@@ -455,6 +455,8 @@ function ungrantedHelpers(): OrknuxHelpers {
       mention: refused('SLACK_MENTION'),
       search: refused('SLACK_SEARCH'),
       suggest: refused('SLACK_SUGGEST'),
+      upload: refused('SLACK_UPLOAD_FILE'),
+      remoteFile: refused('SLACK_UPLOAD_FILE'),
     },
     http: {
       request: refused('NETWORK_REQUEST'),

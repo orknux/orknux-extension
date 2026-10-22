@@ -808,6 +808,11 @@ export type SlackPost =
 /** Whether a reaction went on. Already-reacted counts as ok. */
 export type SlackReaction = { ok: true; error?: undefined } | { error: string; ok?: undefined };
 
+/** A file now on Slack - its id and the permalink a message hangs it on by - or why not. */
+export type SlackHostedFile =
+  | { id: string | null; permalink: string | null; error?: undefined }
+  | { error: string; id?: undefined; permalink?: undefined };
+
 /** The one message a permalink points at, or why it could not be read. */
 export type SlackLinkedMessage =
   | {
@@ -1076,6 +1081,35 @@ export interface OrknuxHelpers {
       kind?: 'USER' | 'CHANNEL',
       limit?: number,
     ): SlackSuggestions;
+
+    /**
+     * Put a file on Slack for it to host, with the connection's own bot token -
+     * text as `content`, bytes as `base64`, up to 10 MB. Shared into `channel`
+     * where one is named; without one it is only uploaded, and its permalink
+     * goes in a later message. Needs `SLACK_UPLOAD_FILE`, and `files:write`.
+     */
+    upload(
+      connection: SlackConnectionArgument,
+      file: {
+        filename: string;
+        content?: string;
+        base64?: string;
+        title?: string;
+        channel?: string;
+        comment?: string;
+        threadTs?: string;
+      },
+    ): SlackHostedFile;
+
+    /**
+     * Register a url as a Slack remote file - a pointer and a preview card -
+     * and share it where a channel is named. Needs `SLACK_UPLOAD_FILE`, and
+     * `remote_files:write` and `remote_files:share`.
+     */
+    remoteFile(
+      connection: SlackConnectionArgument,
+      file: { url: string; title?: string; filetype?: string; channel?: string },
+    ): SlackHostedFile;
   };
 
   http: {
