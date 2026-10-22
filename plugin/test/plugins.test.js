@@ -1643,6 +1643,46 @@ test('the confluence plugin reads a page id out of either spelling of a page url
   );
 });
 
+test('confluence opens a page by the /display/KEY/Title address Server shows', async () => {
+  const url = new URL(`../../plugins/confluence/confluence.js`, import.meta.url);
+  const { default: Confluence } = await import(url.href);
+  const plugin = Object.create(Confluence.prototype);
+  Object.defineProperty(plugin, 'settings', {
+    value: Object.freeze({
+      confluence: {
+        id: 2,
+        type: 'HTTP',
+        pluginType: 'confluence/confluence',
+        url: 'https://wiki.acme.com',
+        authType: 'BEARER_TOKEN',
+        headers: { Authorization: 'Bearer t' },
+      },
+    }),
+  });
+  const openPage = plugin.functions().find((one) => one.name === 'openPage');
+
+  const asked = [];
+  const door = globalThis.orknux.http.get;
+  try {
+    globalThis.orknux.http.get = (where) => {
+      asked.push(where);
+      if (where.includes('/rest/api/content?')) {
+        const found = where.includes('title=Gone') ? [] : [{ id: '4242' }];
+        return { status: 200, headers: {}, body: '{}', json: { results: found } };
+      }
+      return { status: 200, headers: {}, body: '{}', json: { id: '4242', title: 'DoR i DoD', body: { storage: { value: '<p/>' } }, _links: {} } };
+    };
+    const page = openPage.run('https://wiki.acme.com/display/OKO/DoR+i+DoD');
+    assert.equal(page.id, '4242');
+    // Looked up by space and title, the + read as a space; then opened by the id that answered.
+    assert.match(asked[0], /\/rest\/api\/content\?type=page&spaceKey=OKO&title=DoR%20i%20DoD/);
+    assert.match(asked[1], /\/rest\/api\/content\/4242\?/);
+    assert.throws(() => openPage.run('https://wiki.acme.com/display/OKO/Gone'), /no page titled "Gone" in space OKO/);
+  } finally {
+    globalThis.orknux.http.get = door;
+  }
+});
+
 test('confluence turns the ids a page mentions into people, on either deployment', async () => {
   const url = new URL(`../../plugins/confluence/confluence.js`, import.meta.url);
   const { default: Confluence } = await import(url.href);

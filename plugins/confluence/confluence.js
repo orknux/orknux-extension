@@ -271,9 +271,11 @@ function keyFor(text) {
 
 /**
  * The content id, from an id or from any of the urls Confluence spells a page
- * as — Cloud's `/spaces/KEY/pages/123/Title` and Server's `?pageId=123` both.
+ * as — Cloud's `/spaces/KEY/pages/123/Title`, Server's `?pageId=123`, and
+ * Server's `/display/KEY/Title`, which names the page by space and title and is
+ * asked of Confluence, so this takes the settings.
  */
-function pageId(page) {
+function pageId(settings, page) {
   const asked = typeof page === 'string' ? page.trim() : String(page);
   if (/^\d+$/.test(asked)) {
     return asked;
@@ -286,7 +288,39 @@ function pageId(page) {
   if (inQuery !== null) {
     return inQuery[1];
   }
+  const named = titled(asked);
+  if (named !== null) {
+    const found = read(
+      settings,
+      `/rest/api/content?type=page&spaceKey=${encodeURIComponent(named.space)}&title=${encodeURIComponent(named.title)}&limit=1`,
+    );
+    const id = at(at(found, 'results')?.[0], 'id');
+    if (id === undefined || id === null) {
+      throw new Error(`no page titled "${named.title}" in space ${named.space}`);
+    }
+    return String(id);
+  }
   throw new Error(`not a page id or a page url: ${asked}`);
+}
+
+/**
+ * A space and a title out of Server's `/display/KEY/Title` - the address its
+ * own address bar shows, with `+` for a space as in a form - or out of
+ * `?spaceKey=KEY&title=Title`. Null for anything else, and for
+ * `/display/~user`, which is a person's profile.
+ */
+function titled(asked) {
+  const words = (text) => decodeURIComponent(text.replace(/\+/g, ' ')).trim();
+  const display = asked.match(/\/display\/([^/?#~][^/?#]*)\/([^/?#]+)/);
+  if (display !== null) {
+    return { space: words(display[1]), title: words(display[2]) };
+  }
+  const space = asked.match(/[?&]spaceKey=([^&#]+)/);
+  const title = asked.match(/[?&]title=([^&#]+)/);
+  if (space !== null && title !== null) {
+    return { space: words(space[1]), title: words(title[1]) };
+  }
+  return null;
 }
 
 export default class Confluence extends OrknuxPlugin {
@@ -384,7 +418,7 @@ it is not about.
 
 Each match carries an \`id\` and a \`url\`, and \`openPage\` takes either - or any
 Confluence link somebody pasted, Cloud's \`/spaces/KEY/pages/123/Title\` or
-Server's \`?pageId=123\`.
+Server's \`?pageId=123\` or \`/display/KEY/Title\`.
 
 Read the excerpts first and open the **one** page that answers the question.
 Opening five to see which is right costs five page bodies in your context and
@@ -705,12 +739,12 @@ reporting that somebody has never been mentioned.`,
         description:
           'Opens one Confluence page whole: title, space, version, who last changed it and when, a url, ' +
           'and the body. Pass the page\'s id, or any url that names it - a Cloud /spaces/KEY/pages/123/ ' +
-          'link or a Server ?pageId=123 one. The body is Confluence storage format, which is XHTML: ' +
+          'link, a Server ?pageId=123 one, or a Server /display/KEY/Title one. The body is Confluence storage format, which is XHTML: ' +
           'read it as HTML.',
         params: [{ name: 'page', type: 'string' }],
         returnType: 'Page',
         run: (page) => {
-          const id = pageId(page);
+          const id = pageId(this.settings, page);
           const opened = read(
             this.settings,
             `/rest/api/content/${encodeURIComponent(id)}?expand=body.storage,space,version`,
