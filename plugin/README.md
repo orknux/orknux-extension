@@ -353,10 +353,11 @@ what crosses is data, both ways.
 
 The doors are on the `orknux` object the sandbox defines — `orknux.slack.thread`,
 `.post`, `.react`, `.message`, `.user`, `.mention`, `.search`, `.upload`,
-`.remoteFile`, `orknux.http.request`, `.get`, `.post` — each needing its
-capability (`SLACK_READ_THREAD`, `SLACK_POST_MESSAGE`, `SLACK_ADD_REACTION`,
-`SLACK_READ_MESSAGE`, `SLACK_READ_USER`, `SLACK_MENTION`, `SLACK_SEARCH`,
-`SLACK_UPLOAD_FILE` for both file calls, `NETWORK_REQUEST`), and each answering
+`.remoteFile`, `.api`, `.download`, `orknux.http.request`, `.get`, `.post` —
+each needing its capability (`SLACK_READ_THREAD`, `SLACK_POST_MESSAGE`,
+`SLACK_ADD_REACTION`, `SLACK_READ_MESSAGE`, `SLACK_READ_USER`, `SLACK_MENTION`,
+`SLACK_SEARCH`, `SLACK_UPLOAD_FILE` for both file calls, `SLACK_WEB_API_READ`
+for Slack's read methods and a file's bytes, `NETWORK_REQUEST`), and each answering
 `{ error }` as data rather than throwing when it is refused, so a condition
 that could not be decided does not quietly decide. `orknux.log.debug` through
 `.error` are always there and never needed granting — nothing is reached by a

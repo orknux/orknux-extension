@@ -813,6 +813,38 @@ export type SlackHostedFile =
   | { id: string | null; permalink: string | null; error?: undefined }
   | { error: string; id?: undefined; permalink?: undefined };
 
+/**
+ * Slack's own answer to a read method, as Slack wrote it - or why not. Where
+ * Slack refused, `error` is its own word (`missing_scope`, `channel_not_found`)
+ * and `json` is its whole answer, `needed` and all.
+ */
+export type SlackApiAnswer =
+  | { json: { ok: true; [field: string]: any }; error?: undefined }
+  | { error: string; json?: { ok: false; error?: string; [field: string]: any } };
+
+/**
+ * A Slack file's content - text for a text type, base64 for the rest - with
+ * `file`, what `files.info` said about it; or why not.
+ */
+export type SlackDownloadedFile =
+  | {
+      text: string;
+      base64?: undefined;
+      size: number;
+      contentType: string | null;
+      file: { [field: string]: any };
+      error?: undefined;
+    }
+  | {
+      base64: string;
+      text?: undefined;
+      size: number;
+      contentType: string | null;
+      file: { [field: string]: any };
+      error?: undefined;
+    }
+  | { error: string; text?: undefined; base64?: undefined };
+
 /** The one message a permalink points at, or why it could not be read. */
 export type SlackLinkedMessage =
   | {
@@ -1110,6 +1142,39 @@ export interface OrknuxHelpers {
       connection: SlackConnectionArgument,
       file: { url: string; title?: string; filetype?: string; channel?: string },
     ): SlackHostedFile;
+
+    /**
+     * One of Slack's Web API read methods, made with the connection's own bot
+     * token - or its user token, with `{ as: 'user' }` - and answered as Slack
+     * wrote it. Needs `SLACK_WEB_API_READ`, and whatever scope Slack wants for
+     * the method. Reads only: `auth.test`, `conversations.list`,
+     * `users.conversations`, `conversations.history`, `conversations.replies`,
+     * `users.list`, `users.lookupByEmail` and `files.info`; anything else is
+     * refused, naming those. Arguments go by Slack's own names, as strings,
+     * numbers or booleans; a `token` among them is ignored.
+     */
+    api(
+      connection: SlackConnectionArgument,
+      method:
+        | 'auth.test'
+        | 'conversations.list'
+        | 'users.conversations'
+        | 'conversations.history'
+        | 'conversations.replies'
+        | 'users.list'
+        | 'users.lookupByEmail'
+        | 'files.info',
+      args?: { [name: string]: string | number | boolean | null | undefined },
+      options?: { as?: 'bot' | 'user' },
+    ): SlackApiAnswer;
+
+    /**
+     * A Slack file's content by its id, with the connection's bot token:
+     * `files.info`, then `url_private_download`. Needs `SLACK_WEB_API_READ`,
+     * and `files:read`. Up to 5 MB; a text type - `text/*`, JSON, XML, YAML or
+     * CSV - comes back as `text`, anything else as `base64`.
+     */
+    download(connection: SlackConnectionArgument, fileId: string): SlackDownloadedFile;
   };
 
   http: {

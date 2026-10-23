@@ -457,6 +457,8 @@ function ungrantedHelpers(): OrknuxHelpers {
       suggest: refused('SLACK_SUGGEST'),
       upload: refused('SLACK_UPLOAD_FILE'),
       remoteFile: refused('SLACK_UPLOAD_FILE'),
+      api: refused('SLACK_WEB_API_READ'),
+      download: refused('SLACK_WEB_API_READ'),
     },
     http: {
       request: refused('NETWORK_REQUEST'),
