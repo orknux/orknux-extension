@@ -687,9 +687,10 @@ test('the slack plugin declares what the server would accept', async () => {
   assert.equal(inspected.parameters[0].connectionType, 'SLACK');
   assert.equal(inspected.parameters[0].required, false);
   /*
-   * Two tokens, because Slack needs two: a bot token reads what no capability
-   * fronts, and search will not answer to one at all. Both secret, both optional — a
-   * workspace that only reads and posts sets neither.
+   * Two tokens, kept for one more release while administrators accept the
+   * grants that replace them: a bot token reads and uploads where those are
+   * not accepted yet, and search will not answer to one at all. Both secret,
+   * both optional — a workspace whose grants are accepted sets neither.
    */
   assert.equal(inspected.parameters[1].name, 'botToken');
   assert.equal(inspected.parameters[1].secret, true);
@@ -709,6 +710,7 @@ test('the slack plugin declares what the server would accept', async () => {
     'SLACK_SEARCH',
     'SLACK_SUGGEST',
     'SLACK_UPLOAD_FILE',
+    'SLACK_WEB_API_READ',
     'NETWORK_REQUEST',
   ]);
   assert.deepEqual(
@@ -1073,7 +1075,7 @@ test('readAttachment answers a key beside what it read', async () => {
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
   const read = new Slack().functions().find((one) => one.name === 'readAttachment').run;
-  assert.throws(() => read('F1'), /botToken parameter is not set/);
+  assert.throws(() => read('F1'), /no Slack to read through/);
 });
 
 test('the teams plugin declares what the server would accept', async () => {
@@ -3802,6 +3804,176 @@ test('slack uploads go through the connection, and botToken only while the grant
   } finally {
     Object.assign(globalThis.orknux.slack, held);
     globalThis.orknux.http.request = door;
+  }
+});
+
+test('slack reads through the connection, and botToken only while the grant is missing', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+  const made = (settings) => {
+    const plugin = Object.create(Slack.prototype);
+    Object.defineProperty(plugin, 'settings', { value: Object.freeze(settings) });
+    return (name) => plugin.functions().find((one) => one.name === name);
+  };
+  const slack = { id: 7, type: 'SLACK' };
+  const deploys = { id: 'C1', name: 'deploys', is_private: false, num_members: 4, topic: { value: '' } };
+  const ada = { id: 'U1', name: 'ada', deleted: false, real_name: 'Ada Lovelace', profile: { email: 'ada@acme.com' } };
+
+  /* What Slack would answer each method, the same whichever token asked. */
+  const slackSays = (method, args) => {
+    if (method === 'auth.test') return { ok: true, url: 'https://acme.slack.com/' };
+    if (method === 'users.conversations' || method === 'conversations.list') {
+      return { ok: true, channels: [deploys] };
+    }
+    if (method === 'users.list') return { ok: true, members: [ada] };
+    if (method === 'users.lookupByEmail') return { ok: true, user: ada };
+    if (method === 'conversations.replies') return { ok: true, messages: [] };
+    if (method === 'files.info') {
+      return {
+        ok: true,
+        file: { id: args.file, name: 'log.txt', mimetype: 'text/plain', size: 5, url_private: 'https://files.slack.com/F1' },
+      };
+    }
+    if (method === 'conversations.history') {
+      return {
+        ok: true,
+        has_more: false,
+        messages: [
+          {
+            ts: args.latest ?? '1700000100.000100',
+            user: 'U1',
+            text: 'deploy went out',
+            reply_count: 1,
+            latest_reply: '1700000200.000100',
+            files: [{ id: 'F1', name: 'log.txt', mimetype: 'text/plain', size: 5 }],
+          },
+        ],
+      };
+    }
+    return { ok: false, error: 'unknown_method' };
+  };
+
+  const asked = [];
+  const requested = [];
+  let refusal = null;
+  const held = { ...globalThis.orknux.slack };
+  const door = globalThis.orknux.http.request;
+  const fetched = globalThis.orknux.http.get;
+  try {
+    globalThis.orknux.slack.api = (connection, method, args, options) => {
+      /* What crosses is JSON, so check it is: strings and nothing undefined or empty. */
+      asked.push([connection, method, JSON.parse(JSON.stringify(args ?? {})), options]);
+      if (refusal !== null) return refusal;
+      const json = slackSays(method, args ?? {});
+      return json.ok ? { json } : { error: json.error, json };
+    };
+    globalThis.orknux.slack.download = (connection, fileId) => {
+      asked.push([connection, 'download', fileId]);
+      if (refusal !== null) return refusal;
+      return {
+        text: 'hello',
+        size: 5,
+        contentType: 'text/plain',
+        file: { id: fileId, name: 'log.txt', mimetype: 'text/plain', size: 5 },
+      };
+    };
+    globalThis.orknux.slack.user = () => ({ displayName: 'Ada' });
+    globalThis.orknux.http.request = (what) => {
+      requested.push(what);
+      const method = what.url.slice('https://slack.com/api/'.length);
+      const args = Object.fromEntries(new URLSearchParams(what.body));
+      return { status: 200, headers: {}, body: '{}', json: slackSays(method, args) };
+    };
+    globalThis.orknux.http.get = (address) => {
+      requested.push({ url: address });
+      return { status: 200, headers: {}, body: 'hello' };
+    };
+
+    /*
+     * Granted: every reader goes through the configured connection, with the
+     * connection's own token, and nothing goes over the request door - even
+     * with a botToken set, which is only the fallback now.
+     */
+    const call = made({ slack: slack, botToken: 'xoxb-t' });
+    const channels = call('findChannels').run('deploys', 20, false);
+    assert.deepEqual(channels.channels.map((one) => one.name), ['deploys']);
+    assert.equal(channels.channels[0].url, 'https://acme.slack.com/archives/C1', 'the permalink base came from auth.test');
+    assert.equal(call('findChannels').run('', 20, false).complete, true, 'a listing walks the directory');
+    const threads = call('listThreads').run('#deploys', 7, 20, false);
+    assert.equal(threads.threads[0].permalink, 'https://acme.slack.com/archives/C1/p1700000100000100');
+    assert.equal(call('findUsers').run('ada@acme.com', 10).users[0].id, 'U1');
+    assert.equal(call('findUsers').run('lovelace', 10).users[0].id, 'U1');
+    assert.equal(call('findRecent').run('deploy', '#deploys', 7, 20, false, 1, '', true).matches.length, 1);
+    assert.deepEqual(call('listAttachments').run('C1', '1700000100.000100').files.map((one) => one.id), ['F1']);
+    const read = call('readAttachment').run('F1');
+    assert.equal(read.content, 'hello');
+    assert.equal(read.base64, null);
+    assert.equal(read.name, 'log.txt');
+    assert.equal(read.mimetype, 'text/plain');
+
+    assert.equal(requested.length, 0, 'nothing went over the request door with botToken');
+    assert.ok(asked.every((one) => one[0] === slack), 'every read went through the configured connection');
+    assert.deepEqual(
+      [...new Set(asked.map((one) => one[1]))].sort(),
+      [
+        'auth.test',
+        'conversations.history',
+        'conversations.list',
+        'conversations.replies',
+        'download',
+        'users.conversations',
+        'users.list',
+        'users.lookupByEmail',
+      ],
+    );
+    /* An empty cursor is left out, as the botToken path leaves it out. */
+    const firstPage = asked.find((one) => one[1] === 'users.conversations');
+    assert.equal('cursor' in firstPage[2], false);
+    assert.equal(firstPage[2].types, 'public_channel,private_channel');
+
+    /* Nobody at an address is an answer through the connection too. */
+    refusal = { error: 'users_not_found', json: { ok: false, error: 'users_not_found' } };
+    assert.deepEqual(call('findUsers').run('nobody@acme.com', 10).users, []);
+
+    /* Slack's refusal is the answer, with what it wants; botToken is not tried behind it. */
+    refusal = { error: 'missing_scope', json: { ok: false, error: 'missing_scope', needed: 'users:read' } };
+    assert.throws(() => call('findUsers').run('lovelace', 10), /Slack refused users\.list: missing_scope \(it wants users:read\)/);
+    refusal = { error: 'file_not_found' };
+    assert.throws(() => call('readAttachment').run('F9'), /could not read the file: file_not_found/);
+    assert.equal(requested.length, 0, 'botToken was not tried behind a real refusal');
+
+    /* Not granted yet: botToken carries the read the way it always did. */
+    refusal = { error: 'this plugin was not granted SLACK_WEB_API_READ' };
+    assert.deepEqual(call('findChannels').run('deploys', 20, false).channels.map((one) => one.name), ['deploys']);
+    assert.equal(requested[0].url, 'https://slack.com/api/auth.test');
+    assert.equal(requested[0].headers.authorization, 'Bearer xoxb-t');
+    requested.length = 0;
+    assert.equal(call('readAttachment').run('F1').content, 'hello');
+    assert.deepEqual(
+      requested.map((one) => one.url),
+      ['https://slack.com/api/files.info', 'https://files.slack.com/F1'],
+      'files.info and then the file itself, both with botToken',
+    );
+
+    /* Not granted and no token: the refusal says which grant. */
+    assert.throws(
+      () => made({ slack: slack })('findChannels').run('deploys', 20, false),
+      /not granted SLACK_WEB_API_READ/,
+    );
+    assert.throws(() => made({ slack: slack })('readAttachment').run('F1'), /not granted SLACK_WEB_API_READ/);
+
+    /* No connection at all: botToken alone still reads, and with neither the sentence says what to set. */
+    refusal = null;
+    requested.length = 0;
+    asked.length = 0;
+    made({ botToken: 'xoxb-t' })('findUsers').run('ada@acme.com', 10);
+    assert.equal(asked.length, 0);
+    assert.equal(requested[0].url, 'https://slack.com/api/users.lookupByEmail');
+    assert.throws(() => made({})('findChannels').run('', 20, false), /no Slack to read through/);
+  } finally {
+    Object.assign(globalThis.orknux.slack, held);
+    globalThis.orknux.http.request = door;
+    globalThis.orknux.http.get = fetched;
   }
 });
 

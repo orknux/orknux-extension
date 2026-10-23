@@ -34,10 +34,10 @@ exception is `toSlack`, which reaches nothing and so is told nothing.
 | `readMessage(connection, link)` | The one message a permalink points at: `channel`, `ts`, `user`, `text`, `threadTs`. For when a message quotes another by link. |
 | `findChannels(query, limit, withArchived)` | Channels by name, topic or purpose — with `member` saying whether the bot is in it, which decides what else you can do with it. An empty query lists what is there. |
 | `listThreads(channel, days, limit, withNames)` | The threads in one channel, newest activity first: what each is about, how many replied, and the `ts` `readThread` takes. |
-| `findUsers(query, limit)` | People by **name or email**, for turning "the person called Ada" into the `U…` id everything else takes. An email is one exact request; a name reads the directory. Runs on `botToken`. |
+| `findUsers(query, limit)` | People by **name or email**, for turning "the person called Ada" into the `U…` id everything else takes. An email is one exact request; a name reads the directory. Runs on the connection's bot token. |
 | `whoIs(connection, userId)` | Who an id belongs to: `id`, `name`, `realName`, `displayName`, `bot`. Takes the id bare or as the whole `<@U…>` notation a message carries it in. |
 | `search(connection, query, limit)` | `matches` — `channel`, `channelName`, `ts`, `user`, `text`, `permalink` each — and `total`, how many the whole search holds. Slack's search syntax works: `in:#channel`, `from:@name`, `"an exact phrase"`. |
-| `findRecent(query, channel, days, limit, withNames, pages, cursor, threads, skipDays)` | `matches` in the same shape, newest first, by **reading history with the bot token** and searching it — for a workspace with no user token to search with. Nearly full text: diacritics and capitals ignored, a word matched in any of its forms by its stem, `"a phrase"`, `OR`, `-word`, and attachments, link previews and file names searched with the text. Plus how much was read and whether the window was whole. With one channel named it reads five pages of 200 (up to twenty), opens threads to search their replies (up to thirty, a match says its `threadTs`), and answers `nextCursor` where there is more - older history, or threads it had no room to open - with `incompleteBecause` saying which: pass it back as `cursor` to carry on, piece by piece, to the end of the window. A window is a year long at most, and `skipDays` moves it back, so older history is searched a window at a time. Takes no `connection`: it runs on `botToken`. |
+| `findRecent(query, channel, days, limit, withNames, pages, cursor, threads, skipDays)` | `matches` in the same shape, newest first, by **reading history with the bot token** and searching it — for a workspace with no user token to search with. Nearly full text: diacritics and capitals ignored, a word matched in any of its forms by its stem, `"a phrase"`, `OR`, `-word`, and attachments, link previews and file names searched with the text. Plus how much was read and whether the window was whole. With one channel named it reads five pages of 200 (up to twenty), opens threads to search their replies (up to thirty, a match says its `threadTs`), and answers `nextCursor` where there is more - older history, or threads it had no room to open - with `incompleteBecause` saying which: pass it back as `cursor` to carry on, piece by piece, to the end of the window. A window is a year long at most, and `skipDays` moves it back, so older history is searched a window at a time. Takes no `connection`: it reads through the configured `slack` one. |
 | `isFirstReply(connection, channel, threadTs, ts)` | `true` only if this message is the first reply in its thread. **Not a tool** — a workflow condition. |
 
 ### Writing
@@ -272,8 +272,8 @@ It posts through the configured `slack` parameter and answers `ts` and
 | Name | |
 |---|---|
 | `slack` | A `SLACK` connection: the Slack to read through when a function is not handed one. Optional. |
-| `botToken` | A **bot** token (`xoxb-`), **secret**. The functions that call Slack's Web API themselves — `findUsers`, `findRecent`, the channel and thread listings, `listAttachments` and `readAttachment`. Not uploads: those use the connection's own token, and fall back to this only while `SLACK_UPLOAD_FILE` has not been granted. |
-| `userToken` | A **user** token (`xoxp-`), **secret**. `search` alone — see *Two tokens* below. Optional: without it, search falls back to the connection's own User Token field. |
+| `botToken` | **Going away in a later release.** A **bot** token (`xoxb-`), **secret**, read only while `SLACK_WEB_API_READ` or `SLACK_UPLOAD_FILE` has not been accepted: the readers — `findUsers`, `findRecent`, the channel and thread listings, `listAttachments` and `readAttachment` — and the uploads fall back to it until then. Accept both grants and leave it empty. |
+| `userToken` | **Going away in a later release.** A **user** token (`xoxp-`), **secret**, for `search` alone — see *Two tokens* below. Copy it into the Slack connection's **User Token** field and leave this empty: search already falls back to that field. |
 
 ## Attaching a file to a message
 
@@ -365,7 +365,7 @@ as the skill says, a real line break is the only thing that is one.
 
 | | |
 |---|---|
-| `botToken` | `xoxb-`. Reads what no capability fronts **as the bot** — and uploads, only while `SLACK_UPLOAD_FILE` is not granted. |
+| `botToken` | `xoxb-`. Reads and uploads **as the bot**, only while `SLACK_WEB_API_READ` or `SLACK_UPLOAD_FILE` is not granted — the connection's own bot token does both once they are. |
 | `userToken` | `xoxp-`. Runs `search`, which Slack will not answer for a bot at all: `search.messages` refuses a bot token with `not_allowed_token_type`. |
 
 They used to share a field, and the failure mode was quiet: somebody needs
@@ -377,6 +377,12 @@ and now has somewhere to point.
 `userToken` is optional. Left empty, `search` uses the connection's own **User
 Token** field, which is where a workspace that has one usually keeps it — so
 nothing that works today stops working.
+
+**Both parameters go in a later release.** Everything they did, the Slack
+connection now does with its own tokens: the bot token it already holds, and the
+user token in its **User Token** field. Before updating past that release,
+accept `SLACK_WEB_API_READ` and `SLACK_UPLOAD_FILE`, and copy any `userToken`
+into the connection's User Token field.
 
 ## Why the connection is an argument, not just a setting
 
@@ -396,20 +402,23 @@ workspace with one Slack wants and one fewer thing to wire.
 declares — the length of text is a fact about its UTF-8 encoding, not its
 character count.
 
-Nine Slack capabilities, one per call: `SLACK_READ_THREAD`,
+Ten Slack capabilities: `SLACK_READ_THREAD`,
 `SLACK_READ_MESSAGE`, `SLACK_READ_USER`, `SLACK_MENTION`,
 `SLACK_POST_MESSAGE`, `SLACK_ADD_REACTION`, `SLACK_SEARCH`, `SLACK_SUGGEST`,
-and `SLACK_UPLOAD_FILE` for every upload and remote file - `post`'s file
-attachments included. Each is the server making one call for the plugin; the
-plugin never sees a token and could not use one.
+`SLACK_UPLOAD_FILE` for every upload and remote file - `post`'s file
+attachments included - and `SLACK_WEB_API_READ` for the readers: `findChannels`,
+`listThreads`, `findUsers`, `findRecent`, the permalinks they build, and
+`listAttachments` and `readAttachment`. That last one is a fixed list of
+Slack's own read methods rather than one call, and the server refuses any
+method on it that writes. Each is the server calling Slack for the plugin, with
+the connection's own token; the plugin never sees one.
 
-`NETWORK_REQUEST` — **for the functions that hold a token.** The readers that
-call Web API methods no capability fronts go straight at Slack with `botToken`,
-`search` does when `userToken` is set, and `uploadFromUrl` fetches its url
-through it. Uploads used to go this way too, with a copy of the bot token, and
-still do while `SLACK_UPLOAD_FILE` has not been granted and `botToken` is set -
-so updating the plugin before accepting the new grant stops nothing. Accept it
-and uploads need no `botToken` at all.
+`NETWORK_REQUEST` — **for what still holds a token.** `search` goes straight at
+Slack when `userToken` is set, and `uploadFromUrl` fetches its url through it.
+The readers and the uploads used to go this way too, with a copy of the bot
+token, and still do while `SLACK_WEB_API_READ` or `SLACK_UPLOAD_FILE` has not
+been granted and `botToken` is set - so updating the plugin before accepting
+the new grants stops nothing. Accept them and nothing needs `botToken` at all.
 
 ### Slack-side scopes
 
@@ -420,7 +429,9 @@ and uploads need no `botToken` at all.
 | `listAttachments` | `files:read`, plus the conversation's history scope |
 | `readAttachment` | `files:read` |
 | `search` via `userToken` | `search:read` — or the granular `search:read.public`, `.private`, `.im`, `.mpim` — on a user token |
-| `findRecent` | `channels:history`, `channels:read` on the bot token — plus `groups:*` for private ones |
+| `findRecent`, `listThreads` | `channels:history`, `channels:read` on the bot token — plus `groups:*` for private ones |
+| `findChannels` | `channels:read`, plus `groups:read` for private ones |
+| `findUsers` | `users:read`, plus `users:read.email` for addresses |
 
 ## Two caveats worth knowing before you debug them
 
