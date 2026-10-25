@@ -13,7 +13,6 @@ docker compose run --rm dev npm install
 docker compose run --rm dev npm test          # builds, then node --test
 docker compose run --rm dev npm run typecheck
 docker compose run --rm dev npm run example
-docker compose run --rm dev npm run build:plugins   # the plugins that bundle libraries
 docker compose run --rm dev npm run build:icons --workspace @orknux/plugins
 docker compose run --rm dev npm run pack --workspace @orknux/plugins
 ```
@@ -394,9 +393,11 @@ Running it from the Actions tab instead makes no release and leaves the zips as
 a build artifact, which is what checking the pack still works wants.
 
 Two guards run before anything is published. The **rebuild check** runs
-`build:plugins` and `build:icons` and fails on any diff — a zip is packed from
-the checked-in artifact, so an artifact that no longer matches its source would
-otherwise ship silently. The **zip check** opens each zip and runs the CLI's
+`build:icons` and fails on any diff — a zip is packed from the checked-in
+files, so an icon that no longer matches what `icons.mjs` draws would otherwise
+ship silently. Each plugin is the single `.js` file checked in beside its
+`plugin.json`; nothing is bundled from a source any more, so there is no
+plugin build for it to check. The **zip check** opens each zip and runs the CLI's
 `check` on the plugin inside, so a zip holding something the server would refuse
 fails before the release exists rather than on somebody's installation.
 
