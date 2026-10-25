@@ -3633,6 +3633,35 @@ test('anki reads both sides of a card, and the answer without the question above
   }
 });
 
+test('anki lists due cards as Anki reviews them: learning first, then the longest overdue', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const call = (name) => Object.create(Anki.prototype).functions().find((one) => one.name === name);
+  const anki = { id: 3, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://localhost:8765', authType: 'NONE', headers: {} };
+  // By id - the order findCards answers in - the oldest card comes first; by due it is the least overdue.
+  const held = new Map([
+    [100, { queue: 2, due: 2350 }],
+    [200, { queue: 2, due: 2300 }],
+    [300, { queue: 1, due: 1792950000 }],
+    [400, { queue: 3, due: 2320 }],
+    [500, { queue: 2, due: 2310 }],
+  ]);
+  const front = globalThis.orknux.http.post;
+  try {
+    globalThis.orknux.http.post = (where, body) => {
+      const json = body.action === 'findCards'
+        ? { result: [...held.keys()], error: null }
+        : { result: (body.params.cards ?? []).map((id) => ({ cardId: id, note: id, deckName: 'CS', queue: held.get(id).queue, due: held.get(id).due, question: `q${id}`, answer: `a${id}` })), error: null };
+      return { status: 200, headers: {}, body: JSON.stringify(json), json };
+    };
+    const listed = call('dueCards').run(anki, 'CS', 3);
+    assert.equal(listed.count, 5);
+    assert.deepEqual(listed.cards.map((one) => one.cardId), [300, 200, 500]);
+  } finally {
+    globalThis.orknux.http.post = front;
+  }
+});
+
 test('anki answers only the due cards it was given, and says why it skipped the rest', async () => {
   const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
   const { default: Anki } = await import(url.href);

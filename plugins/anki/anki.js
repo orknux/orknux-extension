@@ -141,6 +141,36 @@ function described(answered) {
  * fields is something else at that address - a login page, another service -
  * and is said as that rather than read as an empty answer.
  */
+/** How many cards one cardsInfo asks about while due cards are put in order: a deck can have thousands due. */
+const ORDER_CHUNK = 500;
+
+/**
+ * Due cards in the order Anki's review takes them: cards in learning first, by
+ * when each fell due, then the rest, the longest overdue first.
+ *
+ * findCards answers by card id - the order the cards were added - so the first
+ * twenty were the same oldest cards every time, while Anki itself showed the
+ * most overdue ones; somebody reviewing in Anki never saw the two agree. Read
+ * as each card's queue and due, a chunk at a time, and the cards' ids are what
+ * comes back: what is said about each is read only for the ones shown.
+ */
+function inReviewOrder(connection, ids) {
+  if (ids.length < 2) return ids;
+  const placed = [];
+  for (let from = 0; from < ids.length; from += ORDER_CHUNK) {
+    const chunk = ids.slice(from, from + ORDER_CHUNK);
+    const infos = ask(connection, 'cardsInfo', { cards: chunk });
+    (Array.isArray(infos) ? infos : []).forEach((card, index) => {
+      const queue = Number(at(card, 'queue'));
+      const when = Number(at(card, 'due'));
+      placed.push({ id: chunk[index], learning: queue === 1, when: Number.isFinite(when) ? when : 0, at: from + index });
+    });
+  }
+  // Learning cards are due by the second, the rest by the day; each is compared only with its own kind.
+  placed.sort((one, other) => (one.learning === other.learning ? one.when - other.when || one.at - other.at : one.learning ? -1 : 1));
+  return placed.map((one) => one.id);
+}
+
 function ask(connection, action, params) {
   const held = anki(connection);
   const body = { action, version: VERSION };
@@ -932,7 +962,7 @@ At the end, say how many cards were reviewed and how many were forgotten.`,
         name: 'dueCards',
         description:
           'Says how many cards are due for review, in one deck or across all of them when deck is left out, and ' +
-          'the first of them, each with the cardId answerCards takes and both sides - the answer is for checking ' +
+          'the first of them in the order Anki reviews them - learning first, then the longest overdue - each with the cardId answerCards takes and both sides - the answer is for checking ' +
           'what the person says, not for reading out first. Leave limit out for the first 20.',
         params: [
           {
@@ -948,7 +978,7 @@ At the end, say how many cards were reviewed and how many were forgotten.`,
           const narrowed = typeof deck === 'string' && deck.trim().length > 0 ? ` ${deckQuery(deck.trim())}` : '';
           const ids = ask(connection, 'findCards', { query: `is:due${narrowed}` });
           const due = Array.isArray(ids) ? ids : [];
-          const capped = due.slice(0, Math.max(0, Math.min(limit, MOST)));
+          const capped = inReviewOrder(connection, due).slice(0, Math.max(0, Math.min(limit, MOST)));
           const infos = capped.length === 0 ? [] : ask(connection, 'cardsInfo', { cards: capped });
           return {
             count: due.length,
