@@ -680,26 +680,20 @@ test('the slack plugin declares what the server would accept', async () => {
   assert.equal(inspected.id, 'slack');
   assert.deepEqual(validate(inspected), []);
 
-  /* A connection parameter: answered by pointing at a row, never typed in. */
-  assert.equal(inspected.parameters.length, 3);
-  assert.equal(inspected.parameters[0].name, 'slack');
+  /*
+   * A connection parameter, answered by pointing at a row, never typed in -
+   * and the only one. The tokens are the connection's: the plugin's own
+   * botToken and userToken went in 1.35.0, and with them the last permission.
+   */
+  assert.deepEqual(
+    inspected.parameters.map((parameter) => parameter.name),
+    ['slack'],
+  );
   assert.equal(inspected.parameters[0].type, 'connection');
   assert.equal(inspected.parameters[0].connectionType, 'SLACK');
   assert.equal(inspected.parameters[0].required, false);
-  /*
-   * Two tokens, kept for one more release while administrators accept the
-   * grants that replace them: a bot token reads and uploads where those are
-   * not accepted yet, and search will not answer to one at all. Both secret,
-   * both optional — a workspace whose grants are accepted sets neither.
-   */
-  assert.equal(inspected.parameters[1].name, 'botToken');
-  assert.equal(inspected.parameters[1].secret, true);
-  assert.equal(inspected.parameters[1].required, false);
-  assert.equal(inspected.parameters[2].name, 'userToken');
-  assert.equal(inspected.parameters[2].secret, true);
-  assert.equal(inspected.parameters[2].required, false);
 
-  assert.deepEqual(inspected.permissions, ['TEXT_ENCODING']);
+  assert.deepEqual(inspected.permissions, []);
   assert.deepEqual(inspected.capabilities, [
     'SLACK_READ_THREAD',
     'SLACK_READ_MESSAGE',
@@ -1099,12 +1093,32 @@ test('the teams plugin declares what the server would accept', async () => {
   );
 });
 
+/**
+ * The connection's read door, `orknux.slack.api`, answering from a script of
+ * Slack - which is the only way the slack plugin reaches Slack's Web API.
+ *
+ * The script is handed what was asked: the `method`, the `args` that crossed
+ * (JSON, so nothing undefined), and `body`, those args form-encoded the way
+ * Slack takes them, so a test can match an argument as Slack would see it. It
+ * answers Slack's own JSON, and what comes back is what the server's door
+ * answers: the JSON where Slack said ok, and Slack's word beside it where not.
+ */
+function slackApiFrom(script) {
+  return (_connection, method, args) => {
+    const sent = JSON.parse(JSON.stringify(args ?? {}));
+    const json = script({ method, args: sent, body: new URLSearchParams(sent).toString() });
+    return json !== null && typeof json === 'object' && json.ok === true
+      ? { json }
+      : { error: json?.error ?? 'not_ok', json };
+  };
+}
+
 test('slack finds channels, and lists the threads inside one', async () => {
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   const channels = [
@@ -1155,7 +1169,7 @@ test('slack finds channels, and lists the threads inside one', async () => {
   };
 
   const asked = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   const user_ = globalThis.orknux.slack.user;
   let found;
   let listing;
@@ -1166,21 +1180,21 @@ test('slack finds channels, and lists the threads inside one', async () => {
   try {
     globalThis.orknux.slack.user = (_connection, id) =>
       ({ U1: { displayName: 'Ada' }, U2: { displayName: 'Bob' } })[id] ?? { error: 'user_not_found' };
-    globalThis.orknux.http.request = (what) => {
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
       asked.push(what);
-      const method = what.url.slice('https://slack.com/api/'.length);
+      const method = what.method;
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.list') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: channels } };
+        return { ok: true, channels: channels };
       }
       if (method === 'users.conversations') {
         /* The bot's own channels, which Slack answers as whole conversations. */
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [channels[0]] } };
+        return { ok: true, channels: [channels[0]] };
       }
-      return { status: 200, headers: {}, body: '{}', json: history };
-    };
+      return history;
+    });
 
     found = call('findChannels').run('deploy', 20, false);
     listing = call('findChannels').run('', 20, false);
@@ -1193,7 +1207,7 @@ test('slack finds channels, and lists the threads inside one', async () => {
       refused = thrown.message;
     }
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
     globalThis.orknux.slack.user = user_;
   }
 
@@ -1212,8 +1226,8 @@ test('slack finds channels, and lists the threads inside one', async () => {
    * list is short - a workspace with nine thousand channels answers the
    * directory thirty-seven at a time.
    */
-  assert.equal(asked[1].url, 'https://slack.com/api/users.conversations');
-  assert.equal(asked[2].url, 'https://slack.com/api/conversations.list');
+  assert.equal(asked[1].method, 'users.conversations');
+  assert.equal(asked[2].method, 'conversations.list');
   assert.match(asked[2].body, /exclude_archived=true/);
   assert.match(asked[2].body, /limit=1000/);
 
@@ -1267,7 +1281,7 @@ test('slack finds channels, and lists the threads inside one', async () => {
   );
   assert.equal(exact.complete, true);
   assert.ok(
-    !asked.slice(before).some((one) => one.url.endsWith('conversations.list')),
+    !asked.slice(before).some((one) => one.method === 'conversations.list'),
     'an exact name among the bot own channels should not walk the directory',
   );
 
@@ -1281,7 +1295,7 @@ test('slack finds people by email exactly, and by name through the directory', a
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   const ada = {
@@ -1309,30 +1323,30 @@ test('slack finds people by email exactly, and by name through the directory', a
   ];
 
   const asked = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   let byEmail;
   let missing;
   let byName;
   let narrow;
   try {
-    globalThis.orknux.http.request = (what) => {
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
       asked.push(what);
-      const method = what.url.slice('https://slack.com/api/'.length);
+      const method = what.method;
       if (method === 'users.lookupByEmail') {
         return what.body.includes('ada%40acme.com')
-          ? { status: 200, headers: {}, body: '{}', json: { ok: true, user: ada } }
-          : { status: 200, headers: {}, body: '{}', json: { ok: false, error: 'users_not_found' } };
+          ? { ok: true, user: ada }
+          : { ok: false, error: 'users_not_found' };
       }
       const page = what.body.includes('cursor=PAGE2') ? pages[1] : pages[0];
-      return { status: 200, headers: {}, body: '{}', json: page };
-    };
+      return page;
+    });
 
     byEmail = call('findUsers').run('ada@acme.com', 10);
     missing = call('findUsers').run('nobody@acme.com', 10);
     byName = call('findUsers').run('ada lovelace', 10);
     narrow = call('findUsers').run('ada', 1);
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
   /*
@@ -1340,7 +1354,7 @@ test('slack finds people by email exactly, and by name through the directory', a
    * walk through everybody. Reading the directory to find what Slack can look
    * up directly would be a hundred times the work for the same person.
    */
-  assert.equal(asked[0].url, 'https://slack.com/api/users.lookupByEmail');
+  assert.equal(asked[0].method, 'users.lookupByEmail');
   assert.equal(byEmail.users.length, 1);
   assert.equal(byEmail.users[0].email, 'ada@acme.com');
   assert.equal(byEmail.read, 1);
@@ -1354,7 +1368,7 @@ test('slack finds people by email exactly, and by name through the directory', a
    * A name has no exact call behind it: Slack gives a bot no user search at
    * all, so it is users.list and a filter, paged to the end.
    */
-  assert.equal(asked[2].url, 'https://slack.com/api/users.list');
+  assert.equal(asked[2].method, 'users.list');
   assert.match(asked[3].body, /cursor=PAGE2/);
   assert.deepEqual(
     byName.users.map((one) => one.id),
@@ -1478,7 +1492,7 @@ test('slack findRecent reads what the bot was invited to, and nothing else', asy
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   /*
@@ -1513,25 +1527,25 @@ test('slack findRecent reads what the bot was invited to, and nothing else', asy
   };
 
   const asked = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   let found;
   let refused;
   try {
-    globalThis.orknux.http.request = (what) => {
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
       asked.push(what);
-      const method = what.url.slice('https://slack.com/api/'.length);
+      const method = what.method;
       if (method === 'users.conversations') {
-        return { status: 200, headers: {}, body: '{}', json: conversations };
+        return conversations;
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
         const channel = /channel=([^&]+)/.exec(what.body)[1];
-        return { status: 200, headers: {}, body: '{}', json: histories[channel] };
+        return histories[channel];
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
 
     found = call('findRecent').run('deploy prod', '', 7, 20);
     try {
@@ -1540,12 +1554,11 @@ test('slack findRecent reads what the bot was invited to, and nothing else', asy
       refused = thrown.message;
     }
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
-  /* The bot token, on the bot's own memberships — no connection, no user token. */
-  assert.equal(asked[0].url, 'https://slack.com/api/users.conversations');
-  assert.equal(asked[0].headers.authorization, 'Bearer xoxb-t');
+  /* The connection's bot token, on the bot's own memberships — no user token. */
+  assert.equal(asked[0].method, 'users.conversations');
   assert.match(asked[0].body, /types=public_channel%2Cprivate_channel/);
 
   /*
@@ -1566,7 +1579,7 @@ test('slack findRecent reads what the bot was invited to, and nothing else', asy
 
   /* A permalink built from the workspace url rather than fetched per match. */
   assert.equal(found.matches[0].permalink, 'https://acme.slack.com/archives/C2/p1700000200000100');
-  assert.equal(asked.filter((one) => one.url.endsWith('auth.test')).length, 1, 'the workspace url was fetched more than once');
+  assert.equal(asked.filter((one) => one.method === 'auth.test').length, 1, 'the workspace url was fetched more than once');
 
   /* The join noise a channel keeps is not something anybody is searching for. */
   assert.equal(found.messages, 5);
@@ -1578,7 +1591,7 @@ test('slack findRecent reads what the bot was invited to, and nothing else', asy
   assert.match(found.since, /^\d{4}-\d{2}-\d{2}T/);
 
   /* The window is what was asked for, and one page of it per channel. */
-  const history = asked.find((one) => one.url.endsWith('conversations.history'));
+  const history = asked.find((one) => one.method === 'conversations.history');
   assert.match(history.body, /oldest=\d+/);
   assert.match(history.body, /limit=200/);
 
@@ -3716,7 +3729,7 @@ test('a slack upload with nowhere to go is a thrown sentence, not a request', as
   );
 });
 
-test('slack uploads go through the connection, and botToken only while the grant is missing', async () => {
+test('slack uploads go through the connection, and without SLACK_UPLOAD_FILE answer which permission to accept', async () => {
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
   const made = (settings) => {
@@ -3780,34 +3793,48 @@ test('slack uploads go through the connection, and botToken only while the grant
     assert.equal(posted[1], other);
     assert.match(posted[3], /<https:\/\/acme\.slack\.com\/files\/U1\/F1\/a\.csv\| >$/);
 
-    /* Slack's own refusal is the answer; a second token would ask the same Slack again. */
+    /* Slack's own refusal is the answer, and a token left in the settings is not read. */
     answer = { error: 'missing_scope' };
     assert.throws(
       () => made({ slack: slack, botToken: 'xoxb-t' })('upload').run('C1', 'a.csv', 'a,b', '', ''),
       /could not put a\.csv on Slack: missing_scope/,
     );
-    assert.equal(requested.length, 0, 'botToken was not tried behind a real refusal');
 
-    /* Not granted yet: botToken carries the upload the way it always did. */
+    /*
+     * Not granted: every upload answers which permission to accept, and
+     * where - never a token parameter, and nothing over the request door,
+     * even with a botToken still sitting in an installation's settings.
+     */
     answer = { error: 'this plugin was not granted SLACK_UPLOAD_FILE' };
-    assert.throws(
-      () => made({ slack: slack, botToken: 'xoxb-t' })('upload').run('C1', 'a.csv', 'a,b', '', ''),
-      /could not reach Slack: the test reaches no network/,
-    );
-    assert.equal(requested.pop().url, 'https://slack.com/api/files.getUploadURLExternal');
+    const uploadRefusal =
+      "the Slack plugin cannot put files on Slack until an administrator accepts the SLACK_UPLOAD_FILE permission on the plugin's page";
+    const stale = made({ slack: slack, botToken: 'xoxb-t' });
+    for (const tried of [
+      () => stale('upload').run('C1', 'a.csv', 'a,b', '', ''),
+      () => stale('uploadBinary').run('C1', 'a.pdf', 'JVBERi0=', '', ''),
+      () => stale('remoteFile').run('C1', 'https://example.com/r.pdf', 'The report', 'pdf'),
+      () => stale('post').run('', 'C1', 'see', '', [{ filename: 'q.csv', content: 'x' }]),
+    ]) {
+      assert.throws(tried, (thrown) => {
+        assert.equal(thrown.message, uploadRefusal);
+        return true;
+      });
+    }
+    assert.equal(requested.length, 0, 'nothing went straight at Slack');
 
-    /* Not granted and no token: the refusal says which grant. */
-    assert.throws(
-      () => made({ slack: slack })('upload').run('C1', 'a.csv', 'a,b', '', ''),
-      /not granted SLACK_UPLOAD_FILE/,
-    );
+    /* A server with no upload door at all says the same. */
+    delete globalThis.orknux.slack.upload;
+    assert.throws(() => made({ slack: slack })('upload').run('C1', 'a.csv', 'a,b', '', ''), (thrown) => {
+      assert.equal(thrown.message, uploadRefusal);
+      return true;
+    });
   } finally {
     Object.assign(globalThis.orknux.slack, held);
     globalThis.orknux.http.request = door;
   }
 });
 
-test('slack reads through the connection, and botToken only while the grant is missing', async () => {
+test('slack reads through the connection, and without SLACK_WEB_API_READ answers which permission to accept', async () => {
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
   const made = (settings) => {
@@ -3880,9 +3907,7 @@ test('slack reads through the connection, and botToken only while the grant is m
     globalThis.orknux.slack.user = () => ({ displayName: 'Ada' });
     globalThis.orknux.http.request = (what) => {
       requested.push(what);
-      const method = what.url.slice('https://slack.com/api/'.length);
-      const args = Object.fromEntries(new URLSearchParams(what.body));
-      return { status: 200, headers: {}, body: '{}', json: slackSays(method, args) };
+      return { error: 'the test reaches no network' };
     };
     globalThis.orknux.http.get = (address) => {
       requested.push({ url: address });
@@ -3891,8 +3916,8 @@ test('slack reads through the connection, and botToken only while the grant is m
 
     /*
      * Granted: every reader goes through the configured connection, with the
-     * connection's own token, and nothing goes over the request door - even
-     * with a botToken set, which is only the fallback now.
+     * connection's own token, and nothing goes over the request door - not
+     * even with a botToken left in the settings, which nothing reads any more.
      */
     const call = made({ slack: slack, botToken: 'xoxb-t' });
     const channels = call('findChannels').run('deploys', 20, false);
@@ -3911,7 +3936,7 @@ test('slack reads through the connection, and botToken only while the grant is m
     assert.equal(read.name, 'log.txt');
     assert.equal(read.mimetype, 'text/plain');
 
-    assert.equal(requested.length, 0, 'nothing went over the request door with botToken');
+    assert.equal(requested.length, 0, 'nothing went over the request door');
     assert.ok(asked.every((one) => one[0] === slack), 'every read went through the configured connection');
     assert.deepEqual(
       [...new Set(asked.map((one) => one[1]))].sort(),
@@ -3926,7 +3951,7 @@ test('slack reads through the connection, and botToken only while the grant is m
         'users.lookupByEmail',
       ],
     );
-    /* An empty cursor is left out, as the botToken path leaves it out. */
+    /* An empty cursor is left out, as Slack takes it. */
     const firstPage = asked.find((one) => one[1] === 'users.conversations');
     assert.equal('cursor' in firstPage[2], false);
     assert.equal(firstPage[2].types, 'public_channel,private_channel');
@@ -3935,45 +3960,87 @@ test('slack reads through the connection, and botToken only while the grant is m
     refusal = { error: 'users_not_found', json: { ok: false, error: 'users_not_found' } };
     assert.deepEqual(call('findUsers').run('nobody@acme.com', 10).users, []);
 
-    /* Slack's refusal is the answer, with what it wants; botToken is not tried behind it. */
+    /* Slack's refusal is the answer, with what it wants, and nothing is tried behind it. */
     refusal = { error: 'missing_scope', json: { ok: false, error: 'missing_scope', needed: 'users:read' } };
     assert.throws(() => call('findUsers').run('lovelace', 10), /Slack refused users\.list: missing_scope \(it wants users:read\)/);
     refusal = { error: 'file_not_found' };
     assert.throws(() => call('readAttachment').run('F9'), /could not read the file: file_not_found/);
-    assert.equal(requested.length, 0, 'botToken was not tried behind a real refusal');
+    assert.equal(requested.length, 0, 'nothing was tried behind a real refusal');
 
-    /* Not granted yet: botToken carries the read the way it always did. */
+    /*
+     * Not granted: every reader answers which permission to accept, and
+     * where - never a token parameter, and nothing over the request door,
+     * even with a botToken still sitting in an installation's settings.
+     */
     refusal = { error: 'this plugin was not granted SLACK_WEB_API_READ' };
-    assert.deepEqual(call('findChannels').run('deploys', 20, false).channels.map((one) => one.name), ['deploys']);
-    assert.equal(requested[0].url, 'https://slack.com/api/auth.test');
-    assert.equal(requested[0].headers.authorization, 'Bearer xoxb-t');
-    requested.length = 0;
-    assert.equal(call('readAttachment').run('F1').content, 'hello');
-    assert.deepEqual(
-      requested.map((one) => one.url),
-      ['https://slack.com/api/files.info', 'https://files.slack.com/F1'],
-      'files.info and then the file itself, both with botToken',
-    );
+    const readRefusal =
+      "the Slack plugin cannot read Slack until an administrator accepts the SLACK_WEB_API_READ permission on the plugin's page";
+    const refusedWith = (thrown) => {
+      assert.equal(thrown.message, readRefusal);
+      return true;
+    };
+    assert.throws(() => call('findChannels').run('deploys', 20, false), refusedWith);
+    assert.throws(() => call('listThreads').run('#deploys', 7, 20, false), refusedWith);
+    assert.throws(() => call('findUsers').run('ada@acme.com', 10), refusedWith);
+    assert.throws(() => call('findUsers').run('lovelace', 10), refusedWith);
+    assert.throws(() => call('findRecent').run('deploy', '#deploys', 7, 20, false, 1, '', true), refusedWith);
+    assert.throws(() => call('listAttachments').run('C1', '1700000100.000100'), refusedWith);
+    assert.throws(() => call('readAttachment').run('F1'), refusedWith);
+    assert.equal(requested.length, 0, 'nothing went straight at Slack');
 
-    /* Not granted and no token: the refusal says which grant. */
-    assert.throws(
-      () => made({ slack: slack })('findChannels').run('deploys', 20, false),
-      /not granted SLACK_WEB_API_READ/,
-    );
-    assert.throws(() => made({ slack: slack })('readAttachment').run('F1'), /not granted SLACK_WEB_API_READ/);
+    /* A server with no read door at all says the same. */
+    delete globalThis.orknux.slack.api;
+    delete globalThis.orknux.slack.download;
+    assert.throws(() => made({ slack: slack })('findChannels').run('deploys', 20, false), refusedWith);
+    assert.throws(() => made({ slack: slack })('readAttachment').run('F1'), refusedWith);
 
-    /* No connection at all: botToken alone still reads, and with neither the sentence says what to set. */
+    /* No connection at all: a token in the settings reads nothing, and the sentence says what to set. */
     refusal = null;
-    requested.length = 0;
-    asked.length = 0;
-    made({ botToken: 'xoxb-t' })('findUsers').run('ada@acme.com', 10);
-    assert.equal(asked.length, 0);
-    assert.equal(requested[0].url, 'https://slack.com/api/users.lookupByEmail');
+    assert.throws(() => made({ botToken: 'xoxb-t' })('findUsers').run('ada@acme.com', 10), /no Slack to read through/);
     assert.throws(() => made({})('findChannels').run('', 20, false), /no Slack to read through/);
+    assert.equal(requested.length, 0);
   } finally {
     Object.assign(globalThis.orknux.slack, held);
     globalThis.orknux.http.request = door;
     globalThis.orknux.http.get = fetched;
+  }
+});
+
+test('slack search runs through the connection, whatever userToken an installation still holds', async () => {
+  /*
+   * The connection's User Token field is the one place a user token is kept
+   * since 1.35.0. A userToken left in an older installation's settings is
+   * not read: search goes through the capability, never straight at Slack.
+   */
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+  const plugin = Object.create(Slack.prototype);
+  const slack = { id: 7, type: 'SLACK' };
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: slack, userToken: 'xoxp-u' }) });
+  const search = plugin.functions().find((one) => one.name === 'search');
+
+  const asked = [];
+  const requested = [];
+  const held = globalThis.orknux.slack.search;
+  const door = globalThis.orknux.http.request;
+  try {
+    globalThis.orknux.slack.search = (connection, query, limit) => {
+      asked.push([connection, query, limit]);
+      return { matches: [{ channel: 'C1', ts: '1.2', user: 'U1', username: 'ada', text: 'deploy' }], total: 1 };
+    };
+    globalThis.orknux.http.request = (what) => {
+      requested.push(what);
+      return { error: 'the test reaches no network' };
+    };
+
+    const found = search.run('', 'deploy', 20);
+    assert.equal(found.total, 1);
+    assert.equal(found.matches[0].userName, 'ada');
+    assert.deepEqual(asked, [[slack, 'deploy', 20]]);
+    assert.equal(requested.length, 0, 'nothing went straight at Slack');
+  } finally {
+    globalThis.orknux.slack.search = held;
+    globalThis.orknux.http.request = door;
   }
 });
 
@@ -4173,7 +4240,7 @@ test('slack findRecent reads a named channel page after page, inside threads, an
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   /* Three pages behind two cursors; the middle page holds a thread. */
@@ -4206,34 +4273,34 @@ test('slack findRecent reads a named channel page after page, inside threads, an
   };
 
   const asked = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   let first;
   let rest;
   try {
-    globalThis.orknux.http.request = (what) => {
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
       asked.push(what);
-      const method = what.url.slice('https://slack.com/api/'.length);
+      const method = what.method;
       if (method === 'users.conversations') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+        return { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] };
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
         const cursor = (/cursor=([^&]+)/.exec(what.body) ?? [null, ''])[1];
-        return { status: 200, headers: {}, body: '{}', json: pages[cursor] };
+        return pages[cursor];
       }
       if (method === 'conversations.replies') {
-        return { status: 200, headers: {}, body: '{}', json: thread };
+        return thread;
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
 
     // Two pages asked for: the first two, then a cursor to carry on with.
     first = call('findRecent').run('flash wysylki', '#bos-team', 30, 20, false, 2, '', true);
     rest = call('findRecent').run('flash wysylki', '#bos-team', 30, 20, false, 2, first.nextCursor, true);
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
   /* The top-level match, and the reply inside the thread, which history never answers. */
@@ -4256,7 +4323,7 @@ test('slack findRecent reads a named channel page after page, inside threads, an
   /* The next piece, read from that cursor, to the end of the window. */
   assert.deepEqual(rest.matches.map((one) => one.text), ['first flash wysylki report']);
   assert.equal(rest.nextCursor, null);
-  const histories = asked.filter((one) => one.url.endsWith('conversations.history'));
+  const histories = asked.filter((one) => one.method === 'conversations.history');
   assert.equal(histories.length, 3, 'two pages, then one more from the cursor');
   assert.match(histories[2].body, /cursor=c3/);
 });
@@ -4273,7 +4340,7 @@ test('slack findRecent carries on through the threads it had no room to open', a
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   /* One page, the whole window: a matching message and 31 threads, newest first. */
@@ -4296,33 +4363,33 @@ test('slack findRecent carries on through the threads it had no room to open', a
   });
 
   const opened = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   let first;
   let rest;
   try {
-    globalThis.orknux.http.request = (what) => {
-      const method = what.url.slice('https://slack.com/api/'.length);
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
+      const method = what.method;
       if (method === 'users.conversations') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+        return { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] };
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
-        return { status: 200, headers: {}, body: '{}', json: history };
+        return history;
       }
       if (method === 'conversations.replies') {
         const ts = decodeURIComponent(/ts=([^&]+)/.exec(what.body)[1]);
         opened.push(ts);
-        return { status: 200, headers: {}, body: '{}', json: repliesOf(ts) };
+        return repliesOf(ts);
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
 
     first = call('findRecent').run('flash wysylki', '#bos-team', 100, 20, false, 20, '', true);
     rest = call('findRecent').run('flash wysylki', '#bos-team', 100, 20, false, 20, first.nextCursor, true);
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
   /* Thirty opened, the window read to its end, and a cursor into the thirty-first. */
@@ -4352,7 +4419,7 @@ test('slack findRecent matches like a search: diacritics, word forms, phrases, O
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   const history = {
@@ -4374,23 +4441,23 @@ test('slack findRecent matches like a search: diacritics, word forms, phrases, O
     ],
   };
 
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   const search = (query) => call('findRecent').run(query, '#bos-team', 30, 50, false, 1, '', false).matches.map((one) => one.user);
   const answered = {};
   try {
-    globalThis.orknux.http.request = (what) => {
-      const method = what.url.slice('https://slack.com/api/'.length);
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
+      const method = what.method;
       if (method === 'users.conversations') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+        return { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] };
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
-        return { status: 200, headers: {}, body: '{}', json: history };
+        return history;
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
     answered.folded = search('wysylki');
     answered.stem = search('wysyłka');
     answered.both = search('flash wysylka');
@@ -4398,7 +4465,7 @@ test('slack findRecent matches like a search: diacritics, word forms, phrases, O
     answered.or = search('kurier OR lunch');
     answered.not = search('flash wysylka -staging');
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
   /* Without the ł, and inside a hyphenated word, an attachment and a file name. */
@@ -4430,7 +4497,7 @@ test('slack findRecent answers what matching word by word answered', async () =>
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   /* The version this replaced, word for word. */
@@ -4504,21 +4571,21 @@ test('slack findRecent answers what matching word by word answered', async () =>
     '"roll back" OR "release friday"', 'release deploy -prod', '"friday release deploy"',
   ];
 
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   try {
-    globalThis.orknux.http.request = (what) => {
-      const method = what.url.slice('https://slack.com/api/'.length);
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
+      const method = what.method;
       if (method === 'users.conversations') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+        return { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] };
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
-        return { status: 200, headers: {}, body: '{}', json: history };
+        return history;
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
     for (const query of queries) {
       const groups = parsed(query);
       const expected = messages.filter((one) => answers(one.text, groups)).map((one) => one.user);
@@ -4528,7 +4595,7 @@ test('slack findRecent answers what matching word by word answered', async () =>
       assert.ok(expected.length > 0, `${query} matched nothing, so it tested nothing`);
     }
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 });
 
@@ -4542,37 +4609,32 @@ test('slack findRecent reads one page of each channel when none is named, whatev
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   const read = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   let found;
   try {
-    globalThis.orknux.http.request = (what) => {
-      const method = what.url.slice('https://slack.com/api/'.length);
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
+      const method = what.method;
       if (method === 'users.conversations') {
         const channels = [1, 2, 3].map((at) => ({ id: `C${at}`, name: `team-${at}` }));
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: channels } };
+        return { ok: true, channels: channels };
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
         read.push(/channel=(\w+)/.exec(what.body)[1]);
         const messages = [{ ts: `${1700000000 + read.length}.000100`, user: 'U1', text: 'release notes' }];
-        return {
-          status: 200,
-          headers: {},
-          body: '{}',
-          json: { ok: true, has_more: true, messages: messages, response_metadata: { next_cursor: 'more' } },
-        };
+        return { ok: true, has_more: true, messages: messages, response_metadata: { next_cursor: 'more' } };
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
     found = call('findRecent').run('release', '', 7, 20, false, 5, '', true);
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
   assert.deepEqual(read, ['C1', 'C2', 'C3'], 'one page of each channel, not five');
@@ -4593,32 +4655,32 @@ test('slack findRecent searches a window moved back by skipDays', async () => {
   const { default: Slack } = await import(url.href);
 
   const plugin = Object.create(Slack.prototype);
-  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ botToken: 'xoxb-t' }) });
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
   const call = (name) => plugin.functions().find((one) => one.name === name);
 
   const bodies = [];
-  const door = globalThis.orknux.http.request;
+  const door = globalThis.orknux.slack.api;
   let found;
   let now;
   try {
-    globalThis.orknux.http.request = (what) => {
-      const method = what.url.slice('https://slack.com/api/'.length);
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
+      const method = what.method;
       if (method === 'users.conversations') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] } };
+        return { ok: true, channels: [{ id: 'C1', name: 'bos-team' }] };
       }
       if (method === 'auth.test') {
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, url: 'https://acme.slack.com/' } };
+        return { ok: true, url: 'https://acme.slack.com/' };
       }
       if (method === 'conversations.history') {
         bodies.push(what.body);
-        return { status: 200, headers: {}, body: '{}', json: { ok: true, has_more: false, messages: [] } };
+        return { ok: true, has_more: false, messages: [] };
       }
       throw new Error(`the test was not expecting ${method}`);
-    };
+    });
     now = Math.floor(Date.now() / 1000);
     found = call('findRecent').run('flash', '#bos-team', 30, 20, false, 1, '', false, 365);
   } finally {
-    globalThis.orknux.http.request = door;
+    globalThis.orknux.slack.api = door;
   }
 
   const latest = Number(/latest=(\d+)/.exec(bodies[0])[1]);

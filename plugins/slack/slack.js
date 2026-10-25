@@ -14,8 +14,8 @@
  * a person accepted, through a connection a workspace pointed it at. For all of
  * that surface the plugin never sees a token and could not use one - uploads,
  * and the readers that list channels and fetch attachments, included. The
- * `botToken` and `userToken` parameters are what is left of the time before,
- * and the sections below say when they are still read.
+ * tokens are the connection's, its Bot Token and its User Token, and nowhere
+ * else: the plugin's own `botToken` and `userToken` parameters went in 1.35.0.
  *
  * ## Setting one up
  *
@@ -53,10 +53,8 @@
  *
  * Until the server had that door this went the way the github plugin goes -
  * under NETWORK_REQUEST, straight at Slack's Web API, with a copy of the bot
- * token in the `botToken` parameter - and that path is still here, used only
- * where the capability has not been granted yet and `botToken` is set, so an
- * installation that updates the plugin before accepting the new grant keeps
- * uploading.
+ * token in a `botToken` parameter. That path is gone: without the grant an
+ * upload answers which permission to accept, rather than a second way round.
  *
  * What each is for follows from the shapes a sandbox can hold — text, and
  * bytes wearing base64, which is what the upload door and the http door's
@@ -85,11 +83,9 @@
  * text as text and binary as base64.
  *
  * Before the server had that door they went under NETWORK_REQUEST with a copy
- * of the bot token in `botToken`, and that path is still here on the terms
- * the upload one is: only where the grant has not been accepted yet and
- * `botToken` is set. `botToken` and `userToken` both go in a later release;
- * a user token kept in `userToken` belongs in the connection's User Token
- * field, where search already looks for one.
+ * of the bot token in `botToken`; that path went with the parameter, on the
+ * upload one's terms. Search reads the connection's User Token field, the one
+ * place a user token is kept.
  *
  * Licensed under the Apache License, Version 2.0.
  * SPDX-License-Identifier: Apache-2.0
@@ -105,203 +101,118 @@ function at(holder, name) {
 }
 
 /**
- * One call to Slack's Web API, form-encoded, answered or thrown.
+ * The sentence a call answers where a grant it needs has not been accepted.
  *
- * Form-encoded because that is the one content type every Web API method
- * takes — the upload methods this file calls refuse JSON bodies. Arguments
- * that are undefined or empty are left out, which is how an optional Slack
- * argument is not passed.
+ * Said in terms of what somebody can do about it - who, which permission, and
+ * where - because the person reading it is usually not the one who can accept
+ * it, and "not granted" alone sends them looking for a setting that is not
+ * theirs. There is no second way round any more: the plugin's own token
+ * parameters went in 1.35.0, so a missing grant is the whole of the answer.
  */
-/**
- * The bot token, or the sentence that says which parameter is missing.
- *
- * A user token is accepted and noted rather than refused. Slack takes either
- * for these calls and attributes the result to whoever the token belongs to -
- * so a `xoxp-` here means every file this plugin uploads is posted by that
- * person, under their name and their picture, and the bot's own message
- * afterwards says "I have attached the file" beside somebody else's upload.
- *
- * That is occasionally what somebody wants, which is why this is a line in the
- * log rather than an error. What it usually is, is a `botToken` pointed at
- * the user token `search` needs - the one Slack call here that will not
- * answer to a bot. That token has its own parameter now, `userToken`, so
- * the two no longer have to share a field and uploads can stay the bot's.
- */
-function tokenOf(settings) {
-  const token = settings.botToken;
-  if (typeof token !== 'string' || token.length === 0) {
-    throw new Error("the plugin's botToken parameter is not set, and this needs it");
-  }
-  if (token.startsWith('xoxp-')) {
-    orknux.log.warn(
-      'botToken holds a user token (xoxp-), so Slack will show this upload as posted by that ' +
-        'person rather than by the bot. A bot token (xoxb-) uploads as the bot; if this was ' +
-        'meant for search, it belongs in the userToken parameter.',
-    );
-  }
-  return token;
+function ungranted(capability, doing) {
+  return (
+    `the Slack plugin cannot ${doing} until an administrator accepts the ${capability} ` +
+    "permission on the plugin's page"
+  );
 }
 
-function slackApi(settings, method, args) {
-  const token = tokenOf(settings);
-
-  const body = Object.entries(args)
-    .filter(([, value]) => value !== undefined && value !== '')
-    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
-    .join('&');
-
-  const answered = orknux.http.request({
-    url: `https://slack.com/api/${method}`,
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: body,
-  });
-  if (answered.error !== undefined) {
-    throw new Error(`could not reach Slack: ${answered.error}`);
-  }
-  if (at(answered.json, 'ok') !== true) {
-    const said = at(answered.json, 'error');
-    throw new Error(`Slack refused ${method}: ${typeof said === 'string' ? said : `status ${answered.status}`}`);
-  }
-  return answered.json;
-}
-
-/** Whether `botToken` holds anything, without the warnings reading it brings. */
-function hasBotToken(settings) {
-  return typeof settings.botToken === 'string' && settings.botToken.length > 0;
-}
+const UPLOADING = 'put files on Slack';
+const READING = 'read Slack';
 
 /**
  * Whether a refusal was the upload door not being granted, rather than Slack
- * or the connection saying no - the one refusal `botToken` may stand in for.
+ * or the connection saying no.
  */
 function unoffered(error) {
   return typeof error === 'string' && /not granted SLACK_UPLOAD_FILE|cannot upload files to Slack/.test(error);
 }
 
 /**
- * Whether a file can go through a connection (true), only with `botToken`
- * (false) - or thrown, in a sentence saying what to set, when neither is
- * there. Asked before anything is fetched, so nowhere to put a file costs
- * nothing.
+ * That a file has somewhere to go, or the sentence saying why it has not.
+ * Asked before anything is fetched, so nowhere to put a file costs nothing.
  */
 function uploadable(settings, connection, door) {
-  const named = connection || settings.slack;
-  if (named && typeof orknux.slack[door] === 'function') return true;
-  if (hasBotToken(settings)) return false;
-  throw new Error(
-    named
-      ? "this server cannot put files on Slack through a connection, and the plugin's botToken parameter is not set"
-      : "there is no Slack to upload through: pass the connection, or point the plugin's slack parameter at one",
-  );
+  if (!(connection || settings.slack)) {
+    throw new Error(
+      "there is no Slack to upload through: pass the connection, or point the plugin's slack parameter at one",
+    );
+  }
+  if (typeof orknux.slack[door] !== 'function') {
+    throw new Error(ungranted('SLACK_UPLOAD_FILE', UPLOADING));
+  }
 }
 
 /**
  * A file put on Slack through a connection, by the server, with that
- * connection's own token - or null where it has to go the old way, with
- * `botToken`.
+ * connection's own token.
  *
- * Null only where the door is not there for this plugin (not granted yet) and
- * `botToken` is set: an installation that updated before accepting the new
- * grant keeps uploading the way it did. Every other refusal is the answer -
- * a scope Slack wants, a channel the bot is not in - and falling back to a
- * second token would only ask the same Slack the same question again.
+ * Every refusal is the answer - a scope Slack wants, a channel the bot is not
+ * in - and the grant not being accepted is said as the one thing to do about
+ * it.
  *
  * @param door `upload` or `remoteFile`, the two calls the grant covers.
  */
 function viaConnection(settings, connection, door, file) {
-  if (!uploadable(settings, connection, door)) return null;
+  uploadable(settings, connection, door);
   const answered = through((use) => orknux.slack[door](use, file), connection, settings.slack);
   if (answered.error === undefined) {
     return { id: at(answered, 'id'), permalink: at(answered, 'permalink') };
   }
-  if (unoffered(answered.error) && hasBotToken(settings)) {
-    orknux.log.warn(
-      'SLACK_UPLOAD_FILE is not granted to this plugin, so this upload used the botToken parameter. ' +
-        'Accept the grant and the connection\'s own token is used instead.',
-    );
-    return null;
+  if (unoffered(answered.error)) {
+    throw new Error(ungranted('SLACK_UPLOAD_FILE', UPLOADING));
   }
   throw new Error(`could not put ${file.filename || file.url} on Slack: ${answered.error}`);
 }
 
 /**
  * Whether a refusal was the read door not being granted, rather than Slack or
- * the connection saying no - the one refusal `botToken` may stand in for.
+ * the connection saying no.
  */
 function unread(error) {
   return typeof error === 'string' && /not granted SLACK_WEB_API_READ|cannot read the Slack Web API/.test(error);
 }
 
-/** Said once a run rather than once per page, since a scan reads dozens. */
-let fellBackSaid = false;
-
-/** The botToken path is being taken because the read grant is missing: worth a line, once. */
-function fellBack(settings, error) {
-  if (!unread(error) || !hasBotToken(settings)) return false;
-  if (!fellBackSaid) {
-    fellBackSaid = true;
-    orknux.log.warn(
-      'SLACK_WEB_API_READ is not granted to this plugin, so Slack was read with the botToken parameter. ' +
-        "Accept the grant and the connection's own token is used instead - botToken goes in a later release.",
-    );
-  }
-  return true;
-}
-
 /**
- * Whether a read can go through the configured connection (true), only with
- * `botToken` (false) - or thrown, in a sentence saying what to set, when
- * neither is there.
+ * That a read has a connection to go through, or the sentence saying why not.
  *
  * The readers take no connection argument, so the configured `slack` one is
- * the only one they read through - as it was the only Slack their botToken
- * ever belonged to.
+ * the only one they read through.
  */
-function readsThroughConnection(settings, door) {
-  if (settings.slack && typeof orknux.slack[door] === 'function') return true;
-  if (hasBotToken(settings)) return false;
-  throw new Error(
-    settings.slack
-      ? "this server cannot read Slack's Web API through a connection, and the plugin's botToken parameter is not set"
-      : "there is no Slack to read through: point the plugin's slack parameter at a Slack connection",
-  );
+function readable(settings, door) {
+  if (!settings.slack) {
+    throw new Error("there is no Slack to read through: point the plugin's slack parameter at a Slack connection");
+  }
+  if (typeof orknux.slack[door] !== 'function') {
+    throw new Error(ungranted('SLACK_WEB_API_READ', READING));
+  }
 }
 
 /**
  * One of Slack's read methods, answered or thrown: through the configured
- * connection under SLACK_WEB_API_READ, with that connection's own bot token,
- * or - while the grant has not been accepted - with `botToken`, the way it
- * always went.
+ * connection under SLACK_WEB_API_READ, with that connection's own bot token.
  *
- * Every other refusal is the answer, for the reason `viaConnection` gives:
- * a second token would only ask the same Slack the same question again. And
- * where Slack itself refused, its `needed` is said beside its word, because a
+ * Where Slack itself refused, its `needed` is said beside its word, because a
  * bare `missing_scope` sends somebody looking through the whole app's scopes.
  */
 function readSlack(settings, method, args) {
-  if (readsThroughConnection(settings, 'api')) {
-    const sent = {};
-    for (const [name, value] of Object.entries(args)) {
-      // Left out rather than sent empty, as the botToken path leaves them out.
-      if (value !== undefined && value !== null && value !== '') sent[name] = value;
-    }
-    const answered = orknux.slack.api(settings.slack, method, sent);
-    if (answered.error === undefined) return answered.json;
-    if (!fellBack(settings, answered.error)) {
-      if (answered.json !== undefined && answered.json !== null) {
-        const needed = at(answered.json, 'needed');
-        throw new Error(
-          `Slack refused ${method}: ${answered.error}${typeof needed === 'string' ? ` (it wants ${needed})` : ''}`,
-        );
-      }
-      throw new Error(`could not read Slack's ${method}: ${answered.error}`);
-    }
+  readable(settings, 'api');
+  const sent = {};
+  for (const [name, value] of Object.entries(args)) {
+    // Left out rather than sent empty: an empty cursor is not a cursor.
+    if (value !== undefined && value !== null && value !== '') sent[name] = value;
   }
-  return slackApi(settings, method, args);
+  const answered = orknux.slack.api(settings.slack, method, sent);
+  if (answered.error === undefined) return answered.json;
+  if (unread(answered.error)) {
+    throw new Error(ungranted('SLACK_WEB_API_READ', READING));
+  }
+  if (answered.json !== undefined && answered.json !== null) {
+    const needed = at(answered.json, 'needed');
+    throw new Error(
+      `Slack refused ${method}: ${answered.error}${typeof needed === 'string' ? ` (it wants ${needed})` : ''}`,
+    );
+  }
+  throw new Error(`could not read Slack's ${method}: ${answered.error}`);
 }
 
 /**
@@ -398,42 +309,12 @@ function namedFromUrl(url, contentType) {
 }
 
 /**
- * The last step of the external upload flow, shared by everything that
- * uploads: the file completed, shared where a channel was named, said
- * something about where a comment was — answered as its id and permalink.
- */
-function completed(settings, fileId, filename, channel, comment, threadTs) {
-  const done = slackApi(settings, 'files.completeUploadExternal', {
-    files: JSON.stringify([{ id: fileId, title: filename }]),
-    channel_id: channel || undefined,
-    initial_comment: comment || undefined,
-    thread_ts: threadTs || undefined,
-  });
-  const file = (at(done, 'files') ?? [])[0];
-  return { id: at(file, 'id'), permalink: at(file, 'permalink') };
-}
-
-/** The middle step's two failures, which every upload here answers the same way. */
-function putOrThrow(put) {
-  if (put.error !== undefined) {
-    throw new Error(`could not reach Slack's upload url: ${put.error}`);
-  }
-  if (put.status >= 400) {
-    throw new Error(`Slack's upload url answered ${put.status}`);
-  }
-}
-
-/**
  * Text put on Slack as a file it hosts.
  *
- * Slack's external upload flow, whose three steps are the reason this is one
- * function: ask for an upload url naming the byte length, put the bytes
- * there, then complete - which is also where sharing to a channel and saying
- * something about it happen.
+ * The server runs Slack's external upload flow - an upload url naming the
+ * byte length, the bytes, then the completing call that also shares to a
+ * channel and says something about it - with the connection's own token.
  */
-/** Base64 as a validator reads it: whole quads, padding only at the end. */
-const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-
 function uploadedText(settings, filename, content, channel, comment, threadTs, connection) {
   if (typeof filename !== 'string' || filename.length === 0) {
     throw new Error('an upload needs a filename');
@@ -442,31 +323,17 @@ function uploadedText(settings, filename, content, channel, comment, threadTs, c
     throw new Error('there is no content to upload');
   }
 
-  const hosted = viaConnection(settings, connection, 'upload', {
+  return viaConnection(settings, connection, 'upload', {
     filename: filename,
     content: content,
     channel: channel || undefined,
     comment: comment || undefined,
     threadTs: threadTs || undefined,
   });
-  if (hosted !== null) return hosted;
-
-  const opened = slackApi(settings, 'files.getUploadURLExternal', {
-    filename: filename,
-    length: new TextEncoder().encode(content).length,
-  });
-
-  putOrThrow(
-    orknux.http.request({
-      url: at(opened, 'upload_url'),
-      method: 'POST',
-      headers: { 'content-type': 'application/octet-stream' },
-      body: content,
-    }),
-  );
-
-  return completed(settings, at(opened, 'file_id'), filename, channel, comment, threadTs);
 }
+
+/** Base64 as a validator reads it: whole quads, padding only at the end. */
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /** Bytes, passed as base64, put on Slack the same way. */
 function uploadedBytes(settings, filename, base64, channel, comment, threadTs, connection) {
@@ -478,29 +345,13 @@ function uploadedBytes(settings, filename, base64, channel, comment, threadTs, c
     throw new Error('there are no bytes to upload');
   }
 
-  const hosted = viaConnection(settings, connection, 'upload', {
+  return viaConnection(settings, connection, 'upload', {
     filename: filename,
     base64: packed,
     channel: channel || undefined,
     comment: comment || undefined,
     threadTs: threadTs || undefined,
   });
-  if (hosted !== null) return hosted;
-
-  /*
-   * Slack is told the length in decoded bytes, which base64 carries in its
-   * own arithmetic: three bytes per four characters, less what the padding
-   * says was never there.
-   */
-  const size = Math.floor((packed.replace(/=+$/, '').length * 3) / 4);
-  const opened = slackApi(settings, 'files.getUploadURLExternal', {
-    filename: filename,
-    length: size,
-  });
-
-  putOrThrow(orknux.http.upload(at(opened, 'upload_url'), packed));
-
-  return completed(settings, at(opened, 'file_id'), filename, channel, comment, threadTs);
 }
 
 /** A file fetched from a url and put on Slack, so the workspace holds it. */
@@ -523,25 +374,13 @@ function uploadedFromUrl(settings, url, filename, channel, comment, threadTs, co
       ? filename
       : namedFromUrl(url, got.contentType);
 
-  const hosted = viaConnection(settings, connection, 'upload', {
+  return viaConnection(settings, connection, 'upload', {
     filename: named,
     base64: got.base64,
     channel: channel || undefined,
     comment: comment || undefined,
     threadTs: threadTs || undefined,
   });
-  if (hosted !== null) return hosted;
-
-  const opened = slackApi(settings, 'files.getUploadURLExternal', {
-    filename: named,
-    length: got.size,
-  });
-
-  putOrThrow(
-    orknux.http.upload(at(opened, 'upload_url'), got.base64, got.contentType ?? undefined),
-  );
-
-  return completed(settings, at(opened, 'file_id'), named, channel, comment, threadTs);
 }
 
 /*
@@ -865,87 +704,6 @@ function attaching(settings, attachments, connection) {
     }
   }
   return links;
-}
-
-/**
- * A search run against Slack's own API with the `userToken` parameter.
- *
- * Search is the one call here Slack will not answer for a bot: `search.messages`
- * refuses a `xoxb-` with `not_allowed_token_type`, whoever asks. The capability
- * path reads the User Token field of the connection, which is the right answer
- * when a workspace has filled it in - and this is the answer when it has not,
- * or when the searching identity should not be whoever the connection belongs
- * to. Shaped to match the capability's answer exactly, so the function's
- * callers cannot tell which path ran.
- */
-function searchAs(token, query, limit) {
-  /*
-   * The mistake the other way round, which `tokenOf` has warned about for a
-   * while and this had no answer for. A bot token here fails at Slack with a
-   * bare `not_allowed_token_type`, which says nothing about which of two
-   * parameters is wrong - and the two tokens differ by four characters at the
-   * front, so getting them the wrong way round is a typo rather than a
-   * misunderstanding.
-   */
-  if (typeof token === 'string' && token.startsWith('xoxb-')) {
-    orknux.log.warn(
-      'userToken holds a bot token (xoxb-), and Slack answers search for a user token only. ' +
-        'The bot token belongs in botToken; search needs an xoxp- from somebody who can see ' +
-        'what is being searched for.',
-    );
-  }
-  const answered = orknux.http.request({
-    url: 'https://slack.com/api/search.messages',
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body:
-      `query=${encodeURIComponent(query)}&count=${encodeURIComponent(limit)}`,
-  });
-  if (answered.error !== undefined) {
-    return { error: answered.error };
-  }
-  if (at(answered.json, 'ok') !== true) {
-    const said = at(answered.json, 'error');
-    const code = typeof said === 'string' ? said : `status ${answered.status}`;
-    /*
-     * The two fields that answer "which scope", thrown away until somebody
-     * spent an afternoon on it. Slack says `missing_scope` and then says
-     * exactly what was needed and what the token actually carries - and the
-     * usual cause is a token minted before the scope was added to the app,
-     * because a scope lives in the token rather than in the configuration.
-     *
-     * `search:read.public` is worth knowing about here: Slack's granular
-     * search scopes are per source, so a token carrying only that one
-     * searches public channels and matches nothing in a private one.
-     */
-    const needed = at(answered.json, 'needed');
-    const provided = at(answered.json, 'provided');
-    return {
-      error:
-        typeof needed === 'string'
-          ? `${code}: Slack wants ${needed}` +
-            `${typeof provided === 'string' ? `, and this token carries ${provided}` : ''}` +
-            ' - a scope is minted into a token, so adding one to the app means re-authorising to get a new one'
-          : code,
-    };
-  }
-
-  const messages = at(answered.json, 'messages');
-  const matches = (at(messages, 'matches') ?? []).map((one) => ({
-    channel: at(at(one, 'channel'), 'id'),
-    channelName: at(at(one, 'channel'), 'name'),
-    ts: at(one, 'ts'),
-    /* Slack answers a search match by name where a thread answers by id. */
-    user: at(one, 'user') ?? at(one, 'username'),
-    /* And it carries the name beside the id, so this one costs no lookup at all. */
-    userName: at(one, 'username') ?? null,
-    text: at(one, 'text'),
-    permalink: at(one, 'permalink'),
-  }));
-  return { matches: matches, total: at(messages, 'total') ?? matches.length };
 }
 
 /**
@@ -1428,38 +1186,13 @@ export default class Slack extends OrknuxPlugin {
         connectionType: 'SLACK',
         required: false,
       }),
-      new OrknuxParameter({
-        name: 'botToken',
-        description:
-          'Going away in a later release - leave it empty once SLACK_WEB_API_READ and ' +
-          'SLACK_UPLOAD_FILE are accepted. Reading and uploading go through the Slack connection ' +
-          'and its own bot token; this bot token (xoxb-) is used only while one of those two ' +
-          'grants has not been accepted. It must be the bot\'s own: a user token (xoxp-) works, ' +
-          'but Slack then shows what it does as done by that person.',
-        type: 'string',
-        required: false,
-        secret: true,
-      }),
-      new OrknuxParameter({
-        name: 'userToken',
-        description:
-          'Going away in a later release - copy it into the Slack connection\'s User Token field ' +
-          'and leave this empty. A user token (xoxp-) for search, the one call Slack will not ' +
-          'answer for a bot. Set, search runs as that person; empty, search uses the ' +
-          'connection\'s own User Token field. Nothing else here uses it.',
-        type: 'string',
-        required: false,
-        secret: true,
-      }),
     ];
   }
 
   permissions() {
-    // TextEncoder, for `upload` on the botToken path alone: Slack is told the
-    // file's length in bytes, and the byte length of text is a fact about its
-    // UTF-8 encoding, not about its character count. Through the connection
-    // the server counts them.
-    return ['TEXT_ENCODING'];
+    // None. TEXT_ENCODING was for counting an upload's bytes on the old
+    // botToken path; through the connection the server counts them.
+    return [];
   }
 
   capabilities() {
@@ -1472,14 +1205,14 @@ export default class Slack extends OrknuxPlugin {
       'SLACK_ADD_REACTION',
       'SLACK_SEARCH',
       'SLACK_SUGGEST',
-      // Every upload, through the connection and its own token.
+      // Every upload, through the connection and its own token. Without it
+      // nothing here can put a file on Slack - there is no other way round.
       'SLACK_UPLOAD_FILE',
       // The readers - channels, threads, users, history, files - through the
-      // connection and its own token.
+      // connection and its own token. Without it they answer which grant to
+      // accept, and nothing else.
       'SLACK_WEB_API_READ',
-      // For uploadFromUrl's fetch, for search where userToken is set, and for
-      // the botToken paths readers and uploads fall back to until the two
-      // grants above are accepted — the header says why.
+      // For uploadFromUrl's fetch of the file it copies, and nothing else.
       'NETWORK_REQUEST',
     ];
   }
@@ -3199,8 +2932,8 @@ it notifies nobody else.`,
           'from:@name, "an exact phrase". Answers the matches - channel, ts, user, text and a permalink ' +
           'back to each - and how many the whole search holds. Pass the connection the event came in on, ' +
           'or an empty string to use the configured one. An empty string is always safe: a connection named by an older event may since have been deleted. limit caps the matches. Note: ' +
-          'Slack answers search only for a user token, so either the userToken parameter is set or the ' +
-          'connection carries one in its User Token field.',
+          'Slack answers search only for a user token, so the connection has to carry one in its ' +
+          'User Token field.',
         params: [
           { name: 'connection', type: 'string' },
           { name: 'query', type: 'string' },
@@ -3209,25 +2942,18 @@ it notifies nobody else.`,
         returnType: 'SearchResult',
         run: (connection, query, limit) => {
           /*
-           * The plugin's own user token first, where a workspace set one, and
-           * the connection's User Token field otherwise. Both end at the same
-           * Slack endpoint with the same kind of credential; what differs is
-           * who holds it, and a workspace that has filled in neither gets the
-           * capability's own error rather than a second one invented here.
+           * Through the connection, with its User Token field: the server reads
+           * that token and runs the search, and a connection that has none
+           * answers the capability's own error rather than one invented here.
            */
-          const mine = this.settings.userToken;
-          const found =
-            typeof mine === 'string' && mine.length > 0
-              ? searchAs(mine, query, limit)
-              : through((use) => orknux.slack.search(use, query, limit), connection, this.settings.slack);
+          const found = through((use) => orknux.slack.search(use, query, limit), connection, this.settings.slack);
           if (found.error !== undefined) {
             throw new Error(`could not search Slack: ${found.error}`);
           }
           /*
-           * The field exists on every match whichever path ran. Slack's own
-           * search carries the author's name beside the id, so this is free
-           * here - and a caller reading `userName` should not have to know
-           * which of two routes answered it.
+           * The field exists on every match, whichever spelling the server
+           * answered it in. Slack's own search carries the author's name
+           * beside the id, so this is free here.
            */
           return {
             ...found,
@@ -3728,33 +3454,16 @@ it notifies nobody else.`,
             throw new Error('a remote file needs the http(s) url it lives at');
           }
 
-          const hosted = viaConnection(this.settings, '', 'remoteFile', {
+          /*
+           * The server registers the url as its own external_id, so the same
+           * document registered twice updates rather than duplicates.
+           */
+          return viaConnection(this.settings, '', 'remoteFile', {
             url: url,
             title: title || undefined,
             filetype: filetype || undefined,
             channel: channel || undefined,
           });
-          if (hosted !== null) return hosted;
-
-          /*
-           * The url is its own external_id: registration is idempotent per id,
-           * so registering the same document twice updates rather than
-           * duplicates, and sharing needs no id kept anywhere. The server's
-           * door does the same; this is the botToken path it replaced.
-           */
-          const added = slackApi(this.settings, 'files.remote.add', {
-            external_id: url,
-            external_url: url,
-            title: typeof title === 'string' && title.length > 0 ? title : url,
-            filetype: filetype || undefined,
-          });
-
-          if (typeof channel === 'string' && channel.length > 0) {
-            slackApi(this.settings, 'files.remote.share', { external_id: url, channels: channel });
-          }
-
-          const file = at(added, 'file');
-          return { id: at(file, 'id'), permalink: at(file, 'permalink') };
         },
       }),
 
@@ -3832,62 +3541,24 @@ it notifies nobody else.`,
         returnType: 'AttachmentContent',
         run: (file) => {
           /*
-           * Through the connection first: the server reads files.info and the
-           * bytes behind it with the connection's own bot token, and says
-           * which of text or bytes the file is by the rule chat attachments
-           * use. What follows is the botToken path, kept while the grant is
-           * not accepted.
+           * Through the connection: the server reads files.info and the bytes
+           * behind it with the connection's own bot token, and says which of
+           * text or bytes the file is by the rule chat attachments use - never
+           * text read as bytes' worth of mojibake.
            */
-          if (readsThroughConnection(this.settings, 'download')) {
-            const got = orknux.slack.download(this.settings.slack, String(file));
-            if (got.error === undefined) {
-              const described = at(got, 'file');
-              const mimetype = at(described, 'mimetype') ?? at(got, 'contentType');
-              return typeof got.text === 'string'
-                ? attachmentRead(described, mimetype, at(got, 'size'), got.text, null)
-                : attachmentRead(described, mimetype, at(got, 'size'), null, got.base64);
-            }
-            if (!fellBack(this.settings, got.error)) {
-              throw new Error(`could not read the file: ${got.error}`);
-            }
-          }
-
-          const token = tokenOf(this.settings);
-          const described = at(slackApi(this.settings, 'files.info', { file: file }), 'file');
-          const mimetype = at(described, 'mimetype');
-          const source = at(described, 'url_private');
-          const bearing = { authorization: `Bearer ${token}` };
-
-          /*
-           * Which door, decided by mimetype: text is read as the string it is,
-           * and everything else as bytes wearing base64 — never text read as
-           * bytes' worth of mojibake, and never a refusal now that bytes have
-           * a shape that travels.
-           */
-          const named = typeof mimetype === 'string' ? mimetype : '';
-          const readable =
-            named.startsWith('text/') ||
-            /(json|xml|csv|javascript|yaml|x-sh)\b/.test(named);
-
-          if (readable) {
-            const got = orknux.http.get(source, bearing);
-            if (got.error !== undefined) {
-              throw new Error(`could not fetch the file: ${got.error}`);
-            }
-            if (got.status >= 400) {
-              throw new Error(`Slack answered ${got.status} for the file's content`);
-            }
-            return attachmentRead(described, mimetype, at(described, 'size'), got.body, null);
-          }
-
-          const got = orknux.http.download(source, bearing);
+          readable(this.settings, 'download');
+          const got = orknux.slack.download(this.settings.slack, String(file));
           if (got.error !== undefined) {
-            throw new Error(`could not fetch the file: ${got.error}`);
+            if (unread(got.error)) {
+              throw new Error(ungranted('SLACK_WEB_API_READ', READING));
+            }
+            throw new Error(`could not read the file: ${got.error}`);
           }
-          if (got.status >= 400) {
-            throw new Error(`Slack answered ${got.status} for the file's content`);
-          }
-          return attachmentRead(described, mimetype, got.size, null, got.base64);
+          const described = at(got, 'file');
+          const mimetype = at(described, 'mimetype') ?? at(got, 'contentType');
+          return typeof got.text === 'string'
+            ? attachmentRead(described, mimetype, at(got, 'size'), got.text, null)
+            : attachmentRead(described, mimetype, at(got, 'size'), null, got.base64);
         },
       }),
     ];

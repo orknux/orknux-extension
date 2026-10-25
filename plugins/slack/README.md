@@ -6,10 +6,10 @@ search, carry files both ways — and the one question the raw API never answers
 on its own, *is this the first reply in the thread*, written to be a workflow
 condition.
 
-Most of it never touches a token. A plugin has no network, so those calls ask
-the **server** to talk to Slack, under a capability somebody accepted and
-through a connection the workspace pointed it at. The four file functions are
-the exception, and say so below.
+None of it touches a token. A plugin has no network, so every call asks the
+**server** to talk to Slack, under a capability somebody accepted and through a
+connection the workspace pointed it at. The tokens are the connection's own —
+its **Bot Token** and **User Token** fields — and the plugin never sees either.
 
 ## Nineteen functions, eighteen of them tools
 
@@ -272,8 +272,9 @@ It posts through the configured `slack` parameter and answers `ts` and
 | Name | |
 |---|---|
 | `slack` | A `SLACK` connection: the Slack to read through when a function is not handed one. Optional. |
-| `botToken` | **Going away in a later release.** A **bot** token (`xoxb-`), **secret**, read only while `SLACK_WEB_API_READ` or `SLACK_UPLOAD_FILE` has not been accepted: the readers — `findUsers`, `findRecent`, the channel and thread listings, `listAttachments` and `readAttachment` — and the uploads fall back to it until then. Accept both grants and leave it empty. |
-| `userToken` | **Going away in a later release.** A **user** token (`xoxp-`), **secret**, for `search` alone — see *Two tokens* below. Copy it into the Slack connection's **User Token** field and leave this empty: search already falls back to that field. |
+
+That is the only one. The `botToken` and `userToken` parameters went in 1.35.0;
+the tokens they held belong in the connection — see *Two tokens* below.
 
 ## Attaching a file to a message
 
@@ -363,26 +364,21 @@ as the skill says, a real line break is the only thing that is one.
 
 ## Two tokens, because Slack needs two
 
-| | |
+Both live on the Slack connection, not on the plugin:
+
+| Connection field | |
 |---|---|
-| `botToken` | `xoxb-`. Reads and uploads **as the bot**, only while `SLACK_WEB_API_READ` or `SLACK_UPLOAD_FILE` is not granted — the connection's own bot token does both once they are. |
-| `userToken` | `xoxp-`. Runs `search`, which Slack will not answer for a bot at all: `search.messages` refuses a bot token with `not_allowed_token_type`. |
+| **Bot Token** | `xoxb-`. Everything but search — reading, posting, reacting, uploading — runs on it, **as the bot**. |
+| **User Token** | `xoxp-`. Runs `search`, which Slack will not answer for a bot at all: `search.messages` refuses a bot token with `not_allowed_token_type`. Optional; without it `search` cannot run, and `findRecent` is the search a bot can do. |
 
-They used to share a field, and the failure mode was quiet: somebody needs
-search, puts a user token in `botToken` because that is the only token field
-there is, and from then on every file the workspace uploads is posted by that
-person rather than by the app. `tokenOf` still warns when it sees an `xoxp-`,
-and now has somewhere to point.
+Keep them apart. A user token in the Bot Token field works, and the failure
+mode is quiet: from then on every message and file the workspace sends is
+posted by that person rather than by the app.
 
-`userToken` is optional. Left empty, `search` uses the connection's own **User
-Token** field, which is where a workspace that has one usually keeps it — so
-nothing that works today stops working.
-
-**Both parameters go in a later release.** Everything they did, the Slack
-connection now does with its own tokens: the bot token it already holds, and the
-user token in its **User Token** field. Before updating past that release,
-accept `SLACK_WEB_API_READ` and `SLACK_UPLOAD_FILE`, and copy any `userToken`
-into the connection's User Token field.
+**Up to 1.34.0 the plugin had parameters of its own for these**, `botToken`
+and `userToken`. They are gone, and nothing reads them. An installation that
+still had a `userToken` set should copy it into the connection's User Token
+field; a `botToken` was the same bot token the connection already holds.
 
 ## Why the connection is an argument, not just a setting
 
@@ -398,11 +394,7 @@ workspace with one Slack wants and one fewer thing to wire.
 
 ## What it asks for, and why
 
-`TEXT_ENCODING`, for the byte length a file upload on the `botToken` path
-declares — the length of text is a fact about its UTF-8 encoding, not its
-character count.
-
-Ten Slack capabilities: `SLACK_READ_THREAD`,
+No permissions. Ten Slack capabilities: `SLACK_READ_THREAD`,
 `SLACK_READ_MESSAGE`, `SLACK_READ_USER`, `SLACK_MENTION`,
 `SLACK_POST_MESSAGE`, `SLACK_ADD_REACTION`, `SLACK_SEARCH`, `SLACK_SUGGEST`,
 `SLACK_UPLOAD_FILE` for every upload and remote file - `post`'s file
@@ -413,12 +405,16 @@ Slack's own read methods rather than one call, and the server refuses any
 method on it that writes. Each is the server calling Slack for the plugin, with
 the connection's own token; the plugin never sees one.
 
-`NETWORK_REQUEST` — **for what still holds a token.** `search` goes straight at
-Slack when `userToken` is set, and `uploadFromUrl` fetches its url through it.
-The readers and the uploads used to go this way too, with a copy of the bot
-token, and still do while `SLACK_WEB_API_READ` or `SLACK_UPLOAD_FILE` has not
-been granted and `botToken` is set - so updating the plugin before accepting
-the new grants stops nothing. Accept them and nothing needs `botToken` at all.
+**`SLACK_WEB_API_READ` and `SLACK_UPLOAD_FILE` are not optional.** Without
+the first, every reader answers *the Slack plugin cannot read Slack until an
+administrator accepts the SLACK_WEB_API_READ permission on the plugin's page*;
+without the second, every upload — `post`'s file attachments included —
+answers the same sentence about putting files on Slack and
+`SLACK_UPLOAD_FILE`. There is no second way round: the token parameters that
+used to be one are gone.
+
+`NETWORK_REQUEST`, for `uploadFromUrl`'s fetch of the file it copies, and
+nothing else. Slack itself is never reached that way.
 
 ### Slack-side scopes
 
@@ -428,7 +424,7 @@ the new grants stops nothing. Accept them and nothing needs `botToken` at all.
 | `remoteFile` | `remote_files:write`, `remote_files:share` |
 | `listAttachments` | `files:read`, plus the conversation's history scope |
 | `readAttachment` | `files:read` |
-| `search` via `userToken` | `search:read` — or the granular `search:read.public`, `.private`, `.im`, `.mpim` — on a user token |
+| `search` | `search:read` on the connection's user token — see below for why the granular ones are not enough |
 | `findRecent`, `listThreads` | `channels:history`, `channels:read` on the bot token — plus `groups:*` for private ones |
 | `findChannels` | `channels:read`, plus `groups:read` for private ones |
 | `findUsers` | `users:read`, plus `users:read.email` for addresses |
@@ -437,8 +433,7 @@ the new grants stops nothing. Accept them and nothing needs `botToken` at all.
 
 **Search answers only for a user token.** `search.messages` refuses a bot token
 with `not_allowed_token_type`, which comes back as the error — so a search runs
-on either the `userToken` parameter or the connection's **User Token** field,
-and on nothing else.
+on the connection's **User Token** field and on nothing else.
 
 **`findRecent` is the answer where there is no user token to have.** Slack
 exposes no message search to a bot token at any plan — `search.messages`,
@@ -469,17 +464,15 @@ substitute.** Slack publishes granular search scopes — `search:read.public`,
 `.private`, `.im`, `.mpim` — and a token carrying only `search:read.public` is
 refused by `search.messages` even when freshly minted. The endpoint searches
 every source the identity can see and has no parameter to say otherwise, so it
-asks for the whole grant rather than the part a query happens to touch. A
-refusal now carries Slack's own `needed` and `provided` beside it, which is the
-pair that says which scope is short.
+asks for the whole grant rather than the part a query happens to touch.
 
 **So the lever is whose token it is, not which scope it carries.** A user token
 searches exactly what that person can see — `search:read` on somebody who is in
 forty private channels searches all forty. The way to keep a search out of
 private conversations is therefore a Slack account that is not in any: make one
 for the purpose, add it to the public channels it should read, authorise with
-it, and put its token in `userToken`. That parameter exists for this — the
-searching identity does not have to be whoever the connection belongs to.
+it, and put its token in the connection's User Token field. The searching
+identity does not have to be whoever installed the app.
 
 **A condition that cannot be decided must not quietly decide.** `isFirstReply`
 throws when the thread cannot be read rather than answering `false`: "we could
