@@ -4777,3 +4777,28 @@ test('github createAgentTask asks for the model it was given, the default otherw
     globalThis.orknux.http.request = door;
   }
 });
+
+test('an upload with a comment or a thread and no channel is refused, not shared nowhere', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+  const tool = new Slack().tools().find((one) => one.name === 'uploadBinary' && one.run !== undefined);
+  const store = globalThis.orknux.session.store;
+  globalThis.orknux.session.store = { ...store, get: () => 'UE5H' };
+  try {
+    /*
+     * What an agent did: channel empty, a caption and the thread it was
+     * answering. Slack hosted the file and shared it nowhere, the call
+     * answered a permalink, and the thread heard nothing.
+     */
+    assert.throws(
+      () => tool.run('', 'pricing.png', 'k', 'Here is the diagram.', '1793018325.828889'),
+      /comment or threadTs needs the channel id/,
+    );
+    assert.throws(() => tool.run('  ', 'pricing.png', 'k', '', '1793018325.828889'), /needs the channel id/);
+    /* An empty channel and nothing else is still the upload-only call, as is a channel named. */
+    assert.throws(() => tool.run('', 'pricing.png', 'k', '', ''), /no Slack to upload through/);
+    assert.throws(() => tool.run('C1', 'pricing.png', 'k', 'hi', '17.1'), /no Slack to upload through/);
+  } finally {
+    globalThis.orknux.session.store = store;
+  }
+});

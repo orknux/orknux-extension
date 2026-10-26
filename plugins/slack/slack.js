@@ -309,6 +309,25 @@ function namedFromUrl(url, contentType) {
 }
 
 /**
+ * A comment or a thread with no channel is refused rather than dropped.
+ *
+ * An empty channel only uploads: Slack hosts the file and shares it nowhere,
+ * so the comment and the thread went with it - and the call still answered an
+ * id and a permalink. A model read that as delivered, ended its turn with
+ * finish_answer, and the thread it was answering heard nothing at all.
+ */
+function sharedSomewhere(channel, comment, threadTs) {
+  const empty = (value) => typeof value !== 'string' || value.trim().length === 0;
+  if (empty(channel) && (!empty(comment) || !empty(threadTs))) {
+    throw new Error(
+      'nothing was uploaded: a comment or threadTs needs the channel id it goes to, and channel ' +
+        'was empty. Pass the channel the thread is in - an empty channel only uploads, shares the ' +
+        'file nowhere and posts no message.',
+    );
+  }
+}
+
+/**
  * Text put on Slack as a file it hosts.
  *
  * The server runs Slack's external upload flow - an upload url naming the
@@ -316,6 +335,7 @@ function namedFromUrl(url, contentType) {
  * channel and says something about it - with the connection's own token.
  */
 function uploadedText(settings, filename, content, channel, comment, threadTs, connection) {
+  sharedSomewhere(channel, comment, threadTs);
   if (typeof filename !== 'string' || filename.length === 0) {
     throw new Error('an upload needs a filename');
   }
@@ -337,6 +357,7 @@ const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]
 
 /** Bytes, passed as base64, put on Slack the same way. */
 function uploadedBytes(settings, filename, base64, channel, comment, threadTs, connection) {
+  sharedSomewhere(channel, comment, threadTs);
   if (typeof filename !== 'string' || filename.length === 0) {
     throw new Error('an upload needs a filename');
   }
@@ -356,6 +377,7 @@ function uploadedBytes(settings, filename, base64, channel, comment, threadTs, c
 
 /** A file fetched from a url and put on Slack, so the workspace holds it. */
 function uploadedFromUrl(settings, url, filename, channel, comment, threadTs, connection) {
+  sharedSomewhere(channel, comment, threadTs);
   if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
     throw new Error('a file is fetched by its http(s) url, and none was passed');
   }
