@@ -105,6 +105,19 @@ const PERMALINKS = [
 const JENKINS = 'Which Jenkins to ask: a Jenkins connection, which carries its address and auth.';
 
 /** A nested field, or null rather than a thrown error on the way down. */
+/**
+ * How many bytes a piece of text is in UTF-8, which is what Jenkins counts its
+ * log offsets in. Written out because the sandbox has no TextEncoder.
+ */
+function utf8Length(text) {
+  let bytes = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
 function at(holder, name) {
   if (holder === null || typeof holder !== 'object') {
     return null;
@@ -649,15 +662,18 @@ export default class Jenkins extends OrknuxPlugin {
 
       new OrknuxObject({
         name: 'Log',
-        description: "The end of a build's console output.",
+        description: "A stretch of a build's console output: its end, or from an offset.",
         properties: [
           { name: 'job', kind: 'string', description: 'The job it belongs to.' },
           { name: 'build', kind: 'number', description: 'Which build — what a permalink resolved to.' },
           { name: 'building', kind: 'boolean', description: 'The log is still being written.' },
           { name: 'result', kind: 'string', description: 'Null while it is still running.' },
           { name: 'lines', kind: 'number', description: 'How many lines came back.' },
-          { name: 'truncated', kind: 'boolean', description: 'There is more log above these; ask for more lines.' },
-          { name: 'text', kind: 'string', description: 'The last lines of the console, oldest first.' },
+          { name: 'truncated', kind: 'boolean', description: 'There is more log beyond these: above them for the end, below them from an offset.' },
+          { name: 'size', kind: 'number', description: "The log's length in bytes; null where Jenkins did not say." },
+          { name: 'offset', kind: 'number', description: 'The byte the first line returned starts at; ask for a smaller one to read above it.' },
+          { name: 'next', kind: 'number', description: 'The offset to ask for to read on below these; null at the end of the log.' },
+          { name: 'text', kind: 'string', description: 'The lines, oldest first.' },
           { name: 'url', kind: 'string', description: 'The console, for a person to read the whole of.' },
         ],
       }),
@@ -800,6 +816,12 @@ it means this job runs no tests, or it died before it got to them.
 is where a build says why it stopped. Start with the default. Ask for more only
 when the tail does not say, with \`"lines"\` — and if \`truncated\` is true there is more above, so
 500 is a reasonable second move and 5000 almost never is.
+
+To read a stretch rather than more of the end, page by \`"offset"\`: every answer says
+the byte its first line starts at (\`offset\`) and the log's \`size\`. Ask for an
+offset a few tens of kilobytes smaller to read what came before; from an offset,
+\`next\` is where to ask to read on. Jenkins sends everything from the offset to
+the end, so page from near the end of a large log, never from 0.
 
 Compilation errors, missing credentials and out-of-space are all at the end. A
 test failure is in the middle, which is what step 2 is for.
@@ -1080,21 +1102,25 @@ builds for the one that was yours.`,
       new OrknuxFunction({
         name: 'buildLog',
         description:
-          "The end of a build's console output, which is where a build says why it stopped. " +
-          'Answers the last lines oldest first, how many came back, whether there is more above ' +
-          "them, and the build's own number and result - so a permalink like lastBuild resolves to " +
-          'a number you can quote. which takes a build number or a permalink and is lastBuild if ' +
-          'not given; lines caps how many lines come back, 200 if not given. Only the tail is ' +
-          'fetched, so asking for thousands of lines of a large log is slow and rarely the answer: ' +
+          "A build's console output: its end by default, which is where a build says why it " +
+          'stopped, or from a byte offset. Answers the lines oldest first, how many came back, ' +
+          "whether there is more, the log's size in bytes, the offset of the first line returned " +
+          "and the offset to ask for next, and the build's own number and result - so a permalink " +
+          'like lastBuild resolves to a number you can quote. which takes a build number or a ' +
+          'permalink and is lastBuild if not given; lines caps how many lines come back, 200 if ' +
+          'not given; offset reads from that byte instead of the end - pass back an offset or ' +
+          'next from an earlier answer to page up or down. Reading from an offset fetches the log ' +
+          'from there to its end, so on a large log page from near the end rather than from 0; ' +
           'try the test results first.',
         params: [
           { name: 'jenkins', type: 'connection', description: JENKINS },
           { name: 'job', type: 'string' },
           { name: 'which', type: 'string', required: false, default: 'lastBuild' },
           { name: 'lines', type: 'number', required: false, default: 200 },
+          { name: 'offset', type: 'number', required: false },
         ],
         returnType: 'Log',
-        run: (jenkins, job, which, lines) => {
+        run: (jenkins, job, which, lines, offset) => {
           const ref = reference(job);
           const wanted = ref.build === null ? buildOf(which) : ref.build;
           const capped = Math.min(Math.max(Math.trunc(lines), 1), 5000);
@@ -1132,28 +1158,59 @@ builds for the one that was yours.`,
           const length =
             probe.error === undefined && probe.status < 400 ? Number(header(probe, 'x-text-size')) : NaN;
 
-          const cut = Number.isFinite(length) && length > window;
-          const text = cut
-            ? call(jenkins, { path: `${where}/logText/progressiveText?start=${length - window}` }).body
-            : call(jenkins, { path: `${where}/consoleText` }).body;
-
-          const all = (typeof text === 'string' ? text : '').split('\n');
-          /* The byte window landed mid-line, and half a line is not a line. */
-          if (cut && all.length > 1) {
-            all.shift();
-          }
-          const tail = all.slice(-capped);
-
-          return {
+          const known = Number.isFinite(length) ? length : null;
+          const answer = (taken, first, more, next) => ({
             job: ref.name,
             build: at(about, 'number'),
             building: at(about, 'building') === true,
             result: at(about, 'result'),
-            lines: tail.length,
-            truncated: cut || tail.length < all.length,
-            text: tail.join('\n'),
+            lines: taken.length,
+            truncated: more,
+            size: known,
+            offset: first,
+            next,
+            text: taken.join('\n'),
             url: `${site}${where}/console`,
-          };
+          });
+
+          /*
+           * From an offset, downwards: what a model asks for once the tail did
+           * not say, or to read the stretch above it - an offset it was handed
+           * is the start of a line, so nothing is cut. Jenkins answers from the
+           * byte to the end, which is why the description says to page from
+           * near the end of a large log.
+           */
+          if (offset !== undefined && offset !== null && offset !== '') {
+            const from = Math.max(Math.trunc(Number(offset)) || 0, 0);
+            if (known !== null && from >= known) {
+              return answer([], known, false, null);
+            }
+            const rest = call(jenkins, { path: `${where}/logText/progressiveText?start=${from}` }).body;
+            const following = (typeof rest === 'string' ? rest : '').split('\n');
+            const taken = following.slice(0, capped);
+            const more = following.length > capped;
+            const next = more ? from + taken.reduce((bytes, one) => bytes + utf8Length(one) + 1, 0) : null;
+            return answer(taken, from, more, next);
+          }
+
+          const cut = known !== null && known > window;
+          const start = cut ? known - window : 0;
+          const text = cut
+            ? call(jenkins, { path: `${where}/logText/progressiveText?start=${start}` }).body
+            : call(jenkins, { path: `${where}/consoleText` }).body;
+
+          const all = (typeof text === 'string' ? text : '').split('\n');
+          /* Where the first line kept begins, counted as the lines before it are let go. */
+          let first = start;
+          /* The byte window landed mid-line, and half a line is not a line. */
+          if (cut && all.length > 1) {
+            first += utf8Length(all.shift()) + 1;
+          }
+          const tail = all.slice(-capped);
+          for (const dropped of all.slice(0, all.length - tail.length)) {
+            first += utf8Length(dropped) + 1;
+          }
+          return answer(tail, first, cut || tail.length < all.length, null);
         },
       }),
 

@@ -2973,6 +2973,7 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   let listed;
   let built;
   let log;
+  let paged;
   let queued;
   let started;
   try {
@@ -3012,6 +3013,9 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
       () => call('queueItem').run(site, '99'),
       /queue item 99 is not in the queue any more/,
     );
+
+    /* A stretch from an offset, two lines of it, and where to read on. */
+    paged = call('buildLog').run(site, 'deploy', 'lastBuild', 2, 4951000);
   } finally {
     globalThis.orknux.http.request = door;
     globalThis.orknux.http.get = front;
@@ -3065,6 +3069,17 @@ test('the jenkins plugin names a job however it was spelled, and takes a log by 
   /* The offset landed mid-line, and half a line is not a line. */
   assert.equal(log.text, 'nine\nten');
   assert.equal(log.lines, 2);
+  /* And where those lines sit, so a model can page above them: past the half line, in bytes. */
+  assert.equal(log.size, 5000000);
+  assert.equal(log.offset, 4952000 + 'alf a line that was cut\n'.length);
+  assert.equal(log.next, null);
+
+  /* From an offset: read from that byte, the lines asked for, and the offset of the line after. */
+  assert.match(asked.at(-1).url, /\/logText\/progressiveText\?start=4951000$/);
+  assert.equal(paged.offset, 4951000);
+  assert.equal(paged.text, 'alf a line that was cut\nnine');
+  assert.equal(paged.truncated, true);
+  assert.equal(paged.next, 4951000 + 'alf a line that was cut\nnine\n'.length);
 
   /* A trigger fetches a crumb first, sends it, and reads the queue item off the header. */
   assert.equal(asked[6].url, 'https://ci.example.com/crumbIssuer/api/json');
