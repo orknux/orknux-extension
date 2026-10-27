@@ -815,11 +815,11 @@ test('the slack plugin declares what the server would accept', async () => {
       continue;
     }
     /*
-     * The four that read through a Slack take it as a connection, last and
+     * Those that read through a Slack take it as a connection, last and
      * optional, so the server can show a model which Slacks it holds; the
      * function behind keeps its text connection first for workflows.
      */
-    if (['readMessage', 'whoIs', 'mention', 'readThread'].includes(declared.name)) {
+    if (['readMessage', 'whoIs', 'mention', 'readThread', 'react', 'search'].includes(declared.name)) {
       assert.equal(declared.proxyOf, null, `the agents' ${declared.name} is its own tool`);
       const behind = inspected.functions.find((one) => one.name === declared.name);
       const last = declared.params.at(-1);
@@ -842,6 +842,16 @@ test('the slack plugin declares what the server would accept', async () => {
       assert.equal(declared.returnType, behind.returnType, 'and answering the same shape');
       continue;
     }
+    /*
+     * No agent's tool takes a connection as text. Handed "the connection the
+     * event came in on" with no event in front of it, a model wrote "id1",
+     * which the server cannot check and Slack refused without saying what to
+     * pass - search and react did that until 1.35.2.
+     */
+    assert.ok(
+      !declared.params.some((one) => one.name === 'connection' && one.type !== 'connection'),
+      `${declared.name} takes its connection as text`,
+    );
     assert.equal(declared.proxyOf, declared.name);
     const fronted = inspected.functions.find((one) => one.name === declared.proxyOf);
     assert.deepEqual(declared.params, fronted.params);

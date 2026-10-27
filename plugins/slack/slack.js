@@ -2259,8 +2259,8 @@ it notifies nobody else.`,
         },
       }),
       new OrknuxFunctionTool({ function: 'toSlack' }),
-      new OrknuxFunctionTool({ function: 'react' }),
-      new OrknuxFunctionTool({ function: 'search' }),
+      slackTool(fn('react')),
+      slackTool(fn('search')),
       new OrknuxFunctionTool({ function: 'findRecent' }),
       /*
        * The model's upload takes a key and nothing else; the function a
