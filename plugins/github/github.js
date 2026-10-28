@@ -356,14 +356,16 @@ export default class Github extends OrknuxPlugin {
           },
           { name: 'aheadBy', kind: 'number', description: 'Commits head has that base has not.' },
           { name: 'behindBy', kind: 'number', description: 'Commits base has that head has not.' },
-          { name: 'totalCommits', kind: 'number', description: 'Every commit between them, including any not listed.' },
+          { name: 'totalCommits', kind: 'number', description: 'Every commit between them, on every page.' },
+          { name: 'page', kind: 'number', description: 'Which page of the commits this is, from 1.' },
+          { name: 'pages', kind: 'number', description: 'How many pages the commits come to at this page size.' },
           { name: 'url', kind: 'string', description: 'The comparison, for a person to open.' },
-          { name: 'commits', kind: 'array', of: 'CommitSummary', description: 'The commits, oldest first, at most as many as asked.' },
+          { name: 'commits', kind: 'array', of: 'CommitSummary', description: "This page's commits, oldest first." },
           { name: 'files', kind: 'array', of: 'ChangedFile', description: 'The files changed between them, with patches.' },
           {
             name: 'truncated',
             kind: 'boolean',
-            description: 'More commits or files lie between them than are listed; GitHub itself lists at most 250 commits and 300 files.',
+            description: 'More lies between them than this answer holds: a later page of commits, or past the 300 files GitHub lists.',
           },
         ],
       }),
@@ -1509,35 +1511,39 @@ minutes for everybody on the PR.`,
           'forward deploy), behind it (a rollback) or diverged, by how many commits, the commits ' +
           'oldest first, and the changed files with their patches. Pass owner and repo (or the repo ' +
           'as owner/name, or an empty owner for the configured organization), base and head as shas ' +
-          'or refs, and limit to cap the commits listed, 100 if not given. A deploy is compared as ' +
-          'base = what was running, head = what replaced it.',
+          'or refs, limit for the commits on a page (100 at most, and if not given) and page, from 1. ' +
+          'The answer says how many pages there are: the newest commits are on the last one. A ' +
+          'deploy is compared as base = what was running, head = what replaced it.',
         params: [
           { name: 'owner', type: 'string' },
           { name: 'repo', type: 'string' },
           { name: 'base', type: 'string' },
           { name: 'head', type: 'string' },
           { name: 'limit', type: 'number', required: false, default: 100 },
+          { name: 'page', type: 'number', required: false, default: 1 },
         ],
         returnType: 'Comparison',
-        run: (owner, repo, base, head, limit) => {
+        run: (owner, repo, base, head, limit, page) => {
           const from = String(base ?? '').trim();
           const to = String(head ?? '').trim();
           if (from === '' || to === '') throw new Error('compare needs both base and head - a sha, a branch or a tag each');
-          const most = Math.max(1, Math.trunc(Number(limit) || 100));
+          const size = pageSize(Math.trunc(Number(limit) || 100));
+          const which = Math.max(1, Math.trunc(Number(page) || 1));
           const path = repoPath(this.settings, owner, repo);
           const compared = read(this.settings, {
-            path: `${path}/compare/${encodeURIComponent(from)}...${encodeURIComponent(to)}`,
+            path: `${path}/compare/${encodeURIComponent(from)}...${encodeURIComponent(to)}?per_page=${size}&page=${which}`,
           }).json;
-          const commits = at(compared, 'commits') ?? [];
+          const listed = at(compared, 'commits') ?? [];
           const files = at(compared, 'files') ?? [];
-          const total = at(compared, 'total_commits') ?? commits.length;
-          // The newest when cut: a deploy is read from what it brought last.
-          const listed = commits.slice(-most);
+          const total = at(compared, 'total_commits') ?? listed.length;
+          const pages = Math.max(1, Math.ceil(total / size));
           return {
             status: at(compared, 'status'),
             aheadBy: at(compared, 'ahead_by'),
             behindBy: at(compared, 'behind_by'),
             totalCommits: total,
+            page: which,
+            pages,
             url: at(compared, 'html_url'),
             commits: listed.map((one) => ({
               sha: at(one, 'sha'),
@@ -1547,7 +1553,7 @@ minutes for everybody on the PR.`,
               url: at(one, 'html_url'),
             })),
             files: files.map(changedFile),
-            truncated: listed.length < total || files.length >= 300,
+            truncated: which < pages || files.length >= 300,
           };
         },
       }),

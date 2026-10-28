@@ -261,7 +261,7 @@ test('github pullComments groups the diff comments into threads and counts the o
   assert.equal(approved.state, 'APPROVED');
 });
 
-test('github compare says which way head moved from base, with the newest commits and the files', async () => {
+test('github compare says which way head moved from base, a page of commits at a time, with the files', async () => {
   const url = new URL(`../../plugins/github/github.js`, import.meta.url);
   const { default: Github } = await import(url.href);
   const plugin = Object.create(Github.prototype);
@@ -284,26 +284,31 @@ test('github compare says which way head moved from base, with the newest commit
         headers: {},
         body: '{}',
         json: {
-          status: 'ahead', ahead_by: 3, behind_by: 0, total_commits: 3,
+          status: 'ahead', ahead_by: 5, behind_by: 0, total_commits: 5,
           html_url: 'https://github.com/acme/api/compare/v1.0...v1.1',
-          commits: [commit(1), commit(2), commit(3)],
+          commits: [commit(3), commit(4)],
           files: [{ filename: 'src/app.ts', status: 'modified', additions: 4, deletions: 1, patch: '@@ -1 +1 @@' }],
         },
       };
     };
-    compared = compare.run('', 'api', 'v1.0', 'release/v1.1', 2);
+    compared = compare.run('', 'api', 'v1.0', 'release/v1.1', 2, 2);
+    compare.run('', 'api', 'v1.0', 'v1.1', 500);
     assert.throws(() => compare.run('', 'api', ' ', 'v1.1', 10), /needs both base and head/);
   } finally {
     globalThis.orknux.http.request = door;
   }
 
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0].url, 'https://api.github.com/repos/acme/api/compare/v1.0...release%2Fv1.1');
+  assert.equal(asked.length, 2);
+  assert.equal(asked[0].url, 'https://api.github.com/repos/acme/api/compare/v1.0...release%2Fv1.1?per_page=2&page=2');
+  /* Nothing asked for is the first page, and no page holds more than GitHub's hundred. */
+  assert.equal(asked[1].url, 'https://api.github.com/repos/acme/api/compare/v1.0...v1.1?per_page=100&page=1');
   assert.equal(compared.status, 'ahead');
-  assert.equal(compared.aheadBy, 3);
-  assert.equal(compared.totalCommits, 3);
-  /* Cut to the newest two, oldest first, and said to be cut. */
-  assert.deepEqual(compared.commits.map((one) => one.sha), ['sha2', 'sha3']);
+  assert.equal(compared.aheadBy, 5);
+  assert.equal(compared.totalCommits, 5);
+  /* Five at two a page is three pages; the second is not the last, so there is more. */
+  assert.equal(compared.page, 2);
+  assert.equal(compared.pages, 3);
+  assert.deepEqual(compared.commits.map((one) => one.sha), ['sha3', 'sha4']);
   assert.equal(compared.truncated, true);
   assert.deepEqual(compared.files, [{ path: 'src/app.ts', status: 'modified', additions: 4, deletions: 1, patch: '@@ -1 +1 @@' }]);
 });
