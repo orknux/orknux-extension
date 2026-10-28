@@ -131,6 +131,7 @@ test('the github plugin declares what the server would accept', async () => {
     'searchCode',
     'searchCommits',
     'openCommit',
+    'compare',
     'reviews',
     'buildStatus',
     'openFile',
@@ -258,6 +259,53 @@ test('github pullComments groups the diff comments into threads and counts the o
   assert.equal(asked[1].url, 'https://api.github.com/repos/acme/api/pulls/7/reviews');
   assert.deepEqual(asked[1].body, { event: 'APPROVE', body: 'ok' });
   assert.equal(approved.state, 'APPROVED');
+});
+
+test('github compare says which way head moved from base, with the newest commits and the files', async () => {
+  const url = new URL(`../../plugins/github/github.js`, import.meta.url);
+  const { default: Github } = await import(url.href);
+  const plugin = Object.create(Github.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ token: 'ghp_x', organization: 'acme' }) });
+  const compare = plugin.functions().find((one) => one.name === 'compare');
+
+  const commit = (n) => ({
+    sha: `sha${n}`,
+    html_url: `https://github.com/acme/api/commit/sha${n}`,
+    commit: { message: `change ${n}`, author: { name: 'Ada', date: `2026-10-0${n}T10:00:00Z` } },
+  });
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  let compared;
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      return {
+        status: 200,
+        headers: {},
+        body: '{}',
+        json: {
+          status: 'ahead', ahead_by: 3, behind_by: 0, total_commits: 3,
+          html_url: 'https://github.com/acme/api/compare/v1.0...v1.1',
+          commits: [commit(1), commit(2), commit(3)],
+          files: [{ filename: 'src/app.ts', status: 'modified', additions: 4, deletions: 1, patch: '@@ -1 +1 @@' }],
+        },
+      };
+    };
+    compared = compare.run('', 'api', 'v1.0', 'release/v1.1', 2);
+    assert.throws(() => compare.run('', 'api', ' ', 'v1.1', 10), /needs both base and head/);
+  } finally {
+    globalThis.orknux.http.request = door;
+  }
+
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].url, 'https://api.github.com/repos/acme/api/compare/v1.0...release%2Fv1.1');
+  assert.equal(compared.status, 'ahead');
+  assert.equal(compared.aheadBy, 3);
+  assert.equal(compared.totalCommits, 3);
+  /* Cut to the newest two, oldest first, and said to be cut. */
+  assert.deepEqual(compared.commits.map((one) => one.sha), ['sha2', 'sha3']);
+  assert.equal(compared.truncated, true);
+  assert.deepEqual(compared.files, [{ path: 'src/app.ts', status: 'modified', additions: 4, deletions: 1, patch: '@@ -1 +1 @@' }]);
 });
 
 test('github editPull sends only what was given, and refuses to send nothing', async () => {

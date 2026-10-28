@@ -346,6 +346,29 @@ export default class Github extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'Comparison',
+        description: 'What lies between two commits: which way head moved from base, the commits and the files.',
+        properties: [
+          {
+            name: 'status',
+            kind: 'string',
+            description: 'ahead (head is base plus commits - a forward deploy), behind (head is older - a rollback), diverged, or identical.',
+          },
+          { name: 'aheadBy', kind: 'number', description: 'Commits head has that base has not.' },
+          { name: 'behindBy', kind: 'number', description: 'Commits base has that head has not.' },
+          { name: 'totalCommits', kind: 'number', description: 'Every commit between them, including any not listed.' },
+          { name: 'url', kind: 'string', description: 'The comparison, for a person to open.' },
+          { name: 'commits', kind: 'array', of: 'CommitSummary', description: 'The commits, oldest first, at most as many as asked.' },
+          { name: 'files', kind: 'array', of: 'ChangedFile', description: 'The files changed between them, with patches.' },
+          {
+            name: 'truncated',
+            kind: 'boolean',
+            description: 'More commits or files lie between them than are listed; GitHub itself lists at most 250 commits and 300 files.',
+          },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'CommitSummary',
         description: 'A commit as a list answers it, without the diff.',
         properties: [
@@ -1080,6 +1103,7 @@ minutes for everybody on the PR.`,
       new OrknuxFunctionTool({ function: 'searchCode' }),
       new OrknuxFunctionTool({ function: 'searchCommits' }),
       new OrknuxFunctionTool({ function: 'openCommit' }),
+      new OrknuxFunctionTool({ function: 'compare' }),
       new OrknuxFunctionTool({ function: 'reviews' }),
       new OrknuxFunctionTool({ function: 'buildStatus' }),
       new OrknuxFunctionTool({ function: 'openFile' }),
@@ -1474,6 +1498,56 @@ minutes for everybody on the PR.`,
             deletions: at(at(commit, 'stats'), 'deletions'),
             url: at(commit, 'html_url'),
             files: (at(commit, 'files') ?? []).map(changedFile),
+          };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'compare',
+        description:
+          'What changed between two commits, branches or tags: whether head is ahead of base (a ' +
+          'forward deploy), behind it (a rollback) or diverged, by how many commits, the commits ' +
+          'oldest first, and the changed files with their patches. Pass owner and repo (or the repo ' +
+          'as owner/name, or an empty owner for the configured organization), base and head as shas ' +
+          'or refs, and limit to cap the commits listed, 100 if not given. A deploy is compared as ' +
+          'base = what was running, head = what replaced it.',
+        params: [
+          { name: 'owner', type: 'string' },
+          { name: 'repo', type: 'string' },
+          { name: 'base', type: 'string' },
+          { name: 'head', type: 'string' },
+          { name: 'limit', type: 'number', required: false, default: 100 },
+        ],
+        returnType: 'Comparison',
+        run: (owner, repo, base, head, limit) => {
+          const from = String(base ?? '').trim();
+          const to = String(head ?? '').trim();
+          if (from === '' || to === '') throw new Error('compare needs both base and head - a sha, a branch or a tag each');
+          const most = Math.max(1, Math.trunc(Number(limit) || 100));
+          const path = repoPath(this.settings, owner, repo);
+          const compared = read(this.settings, {
+            path: `${path}/compare/${encodeURIComponent(from)}...${encodeURIComponent(to)}`,
+          }).json;
+          const commits = at(compared, 'commits') ?? [];
+          const files = at(compared, 'files') ?? [];
+          const total = at(compared, 'total_commits') ?? commits.length;
+          // The newest when cut: a deploy is read from what it brought last.
+          const listed = commits.slice(-most);
+          return {
+            status: at(compared, 'status'),
+            aheadBy: at(compared, 'ahead_by'),
+            behindBy: at(compared, 'behind_by'),
+            totalCommits: total,
+            url: at(compared, 'html_url'),
+            commits: listed.map((one) => ({
+              sha: at(one, 'sha'),
+              message: at(at(one, 'commit'), 'message'),
+              author: at(at(at(one, 'commit'), 'author'), 'name'),
+              date: at(at(at(one, 'commit'), 'author'), 'date'),
+              url: at(one, 'html_url'),
+            })),
+            files: files.map(changedFile),
+            truncated: listed.length < total || files.length >= 300,
           };
         },
       }),
