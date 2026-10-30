@@ -355,6 +355,40 @@ function uploadedText(settings, filename, content, channel, comment, threadTs, c
 /** Base64 as a validator reads it: whole quads, padding only at the end. */
 const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
+/**
+ * What a session keeps under a key, as the text it is or as the base64 of
+ * the bytes it is - one answer for every door that takes a contentKey.
+ *
+ * The server says which. A key kept as text and sent as bytes is refused by
+ * the http door ("the body was said to be base64 and is not"), which is how
+ * a .md or .txt attachment on `post` failed while the same key uploaded fine
+ * through the agents' `upload`: that tool asked the kind and the attachment
+ * path did not. Where the server records no kind - one from before it kept
+ * kinds, or a key put without one - the value is read the old way: strict
+ * base64 is bytes, unless it decodes to markup, which is text.
+ */
+function keptUnder(contentKey) {
+  const held = orknux.session.store.get(contentKey);
+  if (typeof held !== 'string' || held.length === 0) {
+    throw new Error(
+      `nothing is kept under ${contentKey} in this session: make the file again and pass ` +
+        'the key that answer carried. A key is only good for the session it was made in.',
+    );
+  }
+  const kind = typeof orknux.session.store.kind === 'function' ? orknux.session.store.kind(contentKey) : null;
+  if (kind !== null && kind !== undefined) {
+    return kind.binary ? { base64: held } : { text: held };
+  }
+  if (held.length >= 64 && STRICT_BASE64.test(held)) {
+    const decoded = orknux.encoding.decodeBase64(held);
+    if (typeof decoded.text === 'string' && /^\s*</.test(decoded.text)) {
+      return { text: decoded.text };
+    }
+    return { base64: held };
+  }
+  return { text: held };
+}
+
 /** Bytes, passed as base64, put on Slack the same way. */
 function uploadedBytes(settings, filename, base64, channel, comment, threadTs, connection) {
   sharedSomewhere(channel, comment, threadTs);
@@ -696,14 +730,11 @@ function attaching(settings, attachments, connection) {
        * The way bytes reach this function without being typed: a key the tool
        * that made them answered, and what it names never left the server.
        */
-      const held = orknux.session.store.get(contentKey);
-      if (typeof held !== 'string' || held.length === 0) {
-        throw new Error(
-          `nothing is kept under ${contentKey} in this session: make the file again and pass the ` +
-            'key that answer carried',
-        );
-      }
-      hosted = uploadedBytes(settings, named, held, '', '', '', connection);
+      const kept = keptUnder(contentKey);
+      hosted =
+        kept.text !== undefined
+          ? uploadedText(settings, named, kept.text, '', '', '', connection)
+          : uploadedBytes(settings, named, kept.base64, '', '', '', connection);
     } else if (typeof base64 === 'string') {
       /*
        * Still here, for the workflow node that has bytes and no session to
@@ -2305,34 +2336,11 @@ it notifies nobody else.`,
                 'write the text into a scratchpad and pass the key scratchpad_keep answers.',
             );
           }
-          const held = orknux.session.store.get(contentKey);
-          if (typeof held !== 'string' || held.length === 0) {
-            throw new Error(
-              `nothing is kept under ${contentKey} in this session: make the file again and pass ` +
-                'the key that answer carried. A key is only good for the session it was made in.',
-            );
-          }
-
-          /*
-           * The server says what the key holds. Where it says nothing - a
-           * server from before it kept kinds, or a key put without one - the
-           * value is read the old way: strict base64 is bytes, unless it
-           * decodes to markup, which is text.
-           */
-          const kind = orknux.session.store.kind(contentKey);
-          if (kind !== null) {
-            return kind.binary
-              ? uploadedBytes(this.settings, filename, held, channel, comment, threadTs)
-              : uploadedText(this.settings, filename, held, channel, comment, threadTs);
-          }
-          if (held.length >= 64 && STRICT_BASE64.test(held)) {
-            const decoded = orknux.encoding.decodeBase64(held);
-            if (typeof decoded.text === 'string' && /^\s*</.test(decoded.text)) {
-              return uploadedText(this.settings, filename, decoded.text, channel, comment, threadTs);
-            }
-            return uploadedBytes(this.settings, filename, held, channel, comment, threadTs);
-          }
-          return uploadedText(this.settings, filename, held, channel, comment, threadTs);
+          // The server says what the key holds; see keptUnder.
+          const kept = keptUnder(contentKey);
+          return kept.text !== undefined
+            ? uploadedText(this.settings, filename, kept.text, channel, comment, threadTs)
+            : uploadedBytes(this.settings, filename, kept.base64, channel, comment, threadTs);
         },
       }),
       /*

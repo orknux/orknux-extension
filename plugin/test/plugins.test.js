@@ -1064,6 +1064,59 @@ test('the agents post refuses an attachment carrying bytes', async () => {
   );
 });
 
+test('a post attachment named by key is sent as what the key holds: text as text, bytes as bytes', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
+  const post = plugin.functions().find((one) => one.name === 'post');
+
+  /*
+   * A markdown file kept as text, a picture kept as bytes, and a key from a
+   * server that recorded no kind. The first is the case that failed: every
+   * key went to the bytes door, and text that is not base64 was refused there
+   * ("the body was said to be base64 and is not") - while the same key went
+   * through the agents' upload tool fine, because that one asked the kind.
+   */
+  const held = new Map([
+    ['notes.md', { value: '# Notes\n\nplain markdown, not base64', kind: { binary: false, contentType: 'text/markdown' } }],
+    ['picture.1', { value: 'iVBORw0KGgo=', kind: { binary: true, contentType: 'image/png' } }],
+    ['old.key', { value: 'words from a server that kept no kind' }],
+  ]);
+  const store = globalThis.orknux.session.store;
+  const hadUpload = Object.hasOwn(globalThis.orknux.slack, 'upload');
+  const hadPost = Object.hasOwn(globalThis.orknux.slack, 'post');
+  const upload_ = globalThis.orknux.slack.upload;
+  const post_ = globalThis.orknux.slack.post;
+  const asked = [];
+  globalThis.orknux.session.store = {
+    put: () => ({ ok: true }),
+    get: (key) => held.get(key)?.value ?? null,
+    kind: (key) => held.get(key)?.kind ?? null,
+  };
+  globalThis.orknux.slack.upload = (_connection, file) => {
+    asked.push(JSON.parse(JSON.stringify(file)));
+    return { id: 'F1', permalink: 'https://acme.slack.com/files/U1/F1/x' };
+  };
+  globalThis.orknux.slack.post = (_connection, channel) => ({ channel, ts: '1.2' });
+  try {
+    post.run('', 'C1', 'see', '', [
+      { filename: 'notes.md', contentKey: 'notes.md' },
+      { filename: 'pic.png', contentKey: 'picture.1' },
+      { filename: 'old.txt', contentKey: 'old.key' },
+    ]);
+  } finally {
+    globalThis.orknux.session.store = store;
+    if (hadUpload) globalThis.orknux.slack.upload = upload_; else delete globalThis.orknux.slack.upload;
+    if (hadPost) globalThis.orknux.slack.post = post_; else delete globalThis.orknux.slack.post;
+  }
+
+  assert.equal(asked.length, 3);
+  assert.deepEqual(asked[0], { filename: 'notes.md', content: '# Notes\n\nplain markdown, not base64' }, 'text goes as content');
+  assert.deepEqual(asked[1], { filename: 'pic.png', base64: 'iVBORw0KGgo=' }, 'bytes go as base64');
+  assert.deepEqual(asked[2], { filename: 'old.txt', content: 'words from a server that kept no kind' }, 'no kind and not base64 is text');
+});
+
 test('the agents uploadBinary takes a key and has nowhere to put bytes', async () => {
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
