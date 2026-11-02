@@ -3603,11 +3603,11 @@ test('the anki plugin declares what the server would accept', async () => {
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'cards', 'answerCards', 'suspendCards', 'unsuspendCards', 'sync'],
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'cards', 'picture', 'answerCards', 'suspendCards', 'unsuspendCards', 'sync'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'cards', 'answerCards', 'suspendCards', 'unsuspendCards', 'sync'],
+    ['decks', 'noteTypes', 'findNotes', 'addNote', 'addBasicNotes', 'updateNote', 'dueCards', 'cards', 'picture', 'answerCards', 'suspendCards', 'unsuspendCards', 'sync'],
   );
   assert.deepEqual(inspected.skills.map((skill) => skill.id), ['anki-cards', 'anki-review']);
 });
@@ -3834,11 +3834,11 @@ test('anki reads both sides of a card, and the answer without the question above
     assert.deepEqual(call('cards').run(anki, [1, 3, 99]), {
       cards: [
         {
-          cardId: 1, noteId: 10, deck: 'English', question: 'cesspool', answer: 'szambo\nbagno',
+          cardId: 1, noteId: 10, deck: 'English', question: 'cesspool', answer: 'szambo\nbagno', pictures: [],
           suspended: false, lapses: 3, nextReviews: ['10m', '2d', '1.7y', '4.5y'],
         },
         {
-          cardId: 3, noteId: 30, deck: 'English', question: 'gist', answer: 'sedno',
+          cardId: 3, noteId: 30, deck: 'English', question: 'gist', answer: 'sedno', pictures: [],
           suspended: true, lapses: 3, nextReviews: ['10m', '2d', '1.7y', '4.5y'],
         },
       ],
@@ -3846,12 +3846,98 @@ test('anki reads both sides of a card, and the answer without the question above
     });
     /* The due list carries the answer too, so a review needs no second call per card. */
     assert.deepEqual(call('dueCards').run(anki, '', 20).cards, [
-      { cardId: 1, noteId: 10, deck: 'English', question: 'cesspool', answer: 'szambo\nbagno' },
+      { cardId: 1, noteId: 10, deck: 'English', question: 'cesspool', answer: 'szambo\nbagno', pictures: [] },
     ]);
     assert.throws(() => call('cards').run(anki, []), /no cardIds were given/);
     assert.throws(() => call('cards').run(anki, ['abc']), /"abc" is not a card id/);
   } finally {
     globalThis.orknux.http.post = front;
+  }
+});
+
+/*
+ * Issue #691: a card that is only a picture read as an empty question, so an
+ * agent quizzing from the deck skipped it - the <img> went with the rest of
+ * the markup and nothing said a picture had been there.
+ */
+test('anki names a card\'s pictures and keeps each where an agent can look at it', async () => {
+  const url = new URL(`../../plugins/anki/anki.js`, import.meta.url);
+  const { default: Anki } = await import(url.href);
+  const functions = Object.create(Anki.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
+  const anki = { id: 2, type: 'HTTP', pluginType: 'anki/ankiconnect', url: 'http://localhost:8765', authType: 'NONE', headers: {} };
+  const media = { 'heart.png': 'iVBORw0KGgo=', 'valve&amp.jpg': '/9j/4AAQ' };
+  const card = {
+    cardId: 5, note: 50, deckName: 'Anatomy', queue: 2,
+    question: '<img src="heart.png">',
+    answer: '<img src="heart.png">\n\n<hr id=answer>\n\nLeft ventricle<br><img src=\'valve&amp;amp.jpg\'> <img src="gone.png"> <img src="https://example.org/x.png">',
+  };
+  const fetched = [];
+  const post = (where, body) => {
+    let result;
+    if (body.action === 'findCards') result = [5];
+    else if (body.action === 'cardsInfo') result = body.params.cards.map((id) => (id === 5 ? card : {}));
+    else if (body.action === 'retrieveMediaFile') {
+      fetched.push(body.params.filename);
+      result = media[body.params.filename] ?? false;
+    } else result = true;
+    const json = { result, error: null };
+    return { status: 200, headers: {}, body: JSON.stringify(json), json };
+  };
+  const front = globalThis.orknux.http.post;
+  const store = globalThis.orknux.session.store;
+  const kept = new Map();
+  try {
+    globalThis.orknux.http.post = post;
+    globalThis.orknux.session.store = {
+      ...store,
+      put: (key, value, kind) => {
+        kept.set(key, { value, kind });
+        return { ok: true };
+      },
+    };
+
+    const [due] = call('dueCards').run(anki, '', 20).cards;
+    /* The text says there is a picture, so a picture-only question is no longer empty. */
+    assert.equal(due.question, '[picture: heart.png]');
+    assert.equal(due.answer, 'Left ventricle\n[picture: valve&amp.jpg] [picture: gone.png] [picture: https://example.org/x.png]');
+    assert.deepEqual(due.pictures, [
+      { side: 'question', file: 'heart.png', key: 'anki.media.heart.png' },
+      { side: 'answer', file: 'valve&amp.jpg', key: 'anki.media.valve&amp.jpg' },
+      { side: 'answer', file: 'gone.png', key: '', reason: 'Anki has no media file called gone.png' },
+      {
+        side: 'answer', file: 'https://example.org/x.png', key: '',
+        reason: 'an address, not a file in Anki - look at it by its address',
+      },
+    ]);
+    /* Kept as bytes, with the type the name says - what picture_view reads. */
+    assert.deepEqual(kept.get('anki.media.heart.png'), { value: 'iVBORw0KGgo=', kind: { contentType: 'image/png', binary: true } });
+    assert.deepEqual(kept.get('anki.media.valve&amp.jpg').kind, { contentType: 'image/jpeg', binary: true });
+    /* The question's picture is not fetched a second time off the back Anki repeats it on, and an address is not fetched. */
+    assert.deepEqual(fetched, ['heart.png', 'valve&amp.jpg', 'gone.png']);
+
+    assert.deepEqual(call('cards').run(anki, [5]).cards[0].pictures.map((one) => one.key),
+      ['anki.media.heart.png', 'anki.media.valve&amp.jpg', '', '']);
+
+    /* One picture by name, for a note findNotes found - pasted as the card's text says it, too. */
+    assert.deepEqual(call('picture').run(anki, '[picture: heart.png]'), { file: 'heart.png', key: 'anki.media.heart.png' });
+    assert.throws(() => call('picture').run(anki, 'gone.png'), /Anki has no media file called gone.png/);
+    assert.throws(() => call('picture').run(anki, ''), /no file was named/);
+
+    /* A store that refuses inside a session is said, not answered with the bytes. */
+    globalThis.orknux.session.store = { ...store, put: () => ({ error: "this session's store already holds 200 keys" }) };
+    assert.throws(() => call('picture').run(anki, 'heart.png'), /already holds 200 keys/);
+
+    /* Outside a session the bytes come back instead, and a card fetches no picture after the first. */
+    globalThis.orknux.session.store = store;
+    assert.deepEqual(call('picture').run(anki, 'heart.png'), { file: 'heart.png', key: '', base64: 'iVBORw0KGgo=' });
+    fetched.length = 0;
+    const storeless = call('dueCards').run(anki, '', 20).cards[0].pictures;
+    assert.deepEqual(fetched, ['heart.png']);
+    assert.ok(storeless.slice(0, 3).every((one) => one.key === '' && /no session store here/.test(one.reason)));
+  } finally {
+    globalThis.orknux.http.post = front;
+    globalThis.orknux.session.store = store;
   }
 });
 

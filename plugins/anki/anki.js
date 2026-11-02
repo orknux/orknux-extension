@@ -201,10 +201,41 @@ function ask(connection, action, params) {
   return json.result;
 }
 
-/** Text out of a card's or a field's HTML, for reading rather than rendering. */
+/** The five entities Anki's editor writes, read back into the characters they stand for. */
+function unescaped(text) {
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
+}
+
+/** An `<img>` tag, with its `src` in either kind of quote or none. */
+const IMG = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
+
+/** The `src` of every picture in a card's or a field's HTML, in the order they appear, each once. */
+function picturesIn(html) {
+  const found = [];
+  for (const match of String(html ?? '').matchAll(IMG)) {
+    const src = unescaped((match[1] ?? match[2] ?? match[3] ?? '').trim());
+    if (src.length > 0 && !found.includes(src)) found.push(src);
+  }
+  return found;
+}
+
+/**
+ * Text out of a card's or a field's HTML, for reading rather than rendering.
+ *
+ * A picture is said as `[picture: name]` rather than dropped with the rest of
+ * the markup. Dropped, a card that is only a picture read as an empty
+ * question, and an agent quizzing from the deck skipped it as blank - it had
+ * no way to know there was anything to look at.
+ */
 function plain(html) {
   return String(html ?? '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(IMG, (whole, double, single, bare) => `[picture: ${unescaped((double ?? single ?? bare ?? '').trim())}]`)
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
@@ -214,6 +245,94 @@ function plain(html) {
     .replace(/&quot;/g, '"')
     .replace(/[ \t]+\n/g, '\n')
     .trim();
+}
+
+/** How many pictures one call fetches out of Anki, so a deck of diagrams cannot fill the session's store in one go. */
+const MOST_PICTURES = 12;
+
+/** The picture types a file name says, for the store to record beside the bytes. */
+const PICTURE_TYPES = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif', tif: 'image/tiff', tiff: 'image/tiff',
+};
+
+/** Whether a `src` is an address rather than one of Anki's media files. */
+function isAddress(src) {
+  return /^(https?:|data:)/i.test(src);
+}
+
+/** The session key a media file is kept under: its name where it fits, a hash where it is too long to be one. */
+function pictureKey(file) {
+  const key = `anki.media.${file}`;
+  if (key.length <= 200) return key;
+  let hash = 0x811c9dc5;
+  for (let at = 0; at < file.length; at += 1) {
+    hash ^= file.charCodeAt(at);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `anki.media.${hash.toString(36)}${file.slice(file.lastIndexOf('.')).slice(0, 10)}`;
+}
+
+/**
+ * One media file out of Anki, kept in the session's store under a key - the
+ * key `picture_view` takes, and any tool that attaches or uploads a file.
+ *
+ * Answers the key, or the reason there is none: Anki has no such file, the
+ * file is too large for the store, or the call belongs to no session and so
+ * has no store to keep it in. A reason rather than a throw, because the card
+ * is still worth answering without its picture.
+ */
+function keepPicture(connection, file) {
+  const base64 = ask(connection, 'retrieveMediaFile', { filename: file });
+  if (typeof base64 !== 'string' || base64.length === 0) {
+    return { key: '', reason: `Anki has no media file called ${file}` };
+  }
+  const extension = file.slice(file.lastIndexOf('.') + 1).toLowerCase();
+  const key = pictureKey(file);
+  const kept = orknux.session.store.put(key, base64, { contentType: PICTURE_TYPES[extension] ?? null, binary: true });
+  return kept.error === undefined ? { key, base64 } : { key: '', reason: kept.error, base64 };
+}
+
+/**
+ * The pictures on a card, each kept where it can be looked at.
+ *
+ * `budget` is shared across one call's cards and counts down, so the twelfth
+ * picture of a long due list is still named and the thirteenth is named with
+ * the reason it was not fetched - `picture` fetches it on its own. An address
+ * is handed over as it is: `picture_view` takes an address too.
+ */
+function picturesOf(connection, question, answer, budget) {
+  const sides = [
+    ...picturesIn(question).map((src) => ({ side: 'question', src })),
+    ...picturesIn(answer).map((src) => ({ side: 'answer', src })),
+  ];
+  return sides.map(({ side, src }) => {
+    if (isAddress(src)) {
+      return { side, file: src, key: '', reason: 'an address, not a file in Anki - look at it by its address' };
+    }
+    // Outside a session nothing can be kept, and every fetch after the first would be bytes thrown away.
+    if (budget.storeless !== undefined) {
+      return { side, file: src, key: '', reason: budget.storeless };
+    }
+    if (budget.left <= 0) {
+      return { side, file: src, key: '', reason: `not fetched: one call fetches at most ${MOST_PICTURES} - picture fetches it` };
+    }
+    budget.left -= 1;
+    const kept = keepPicture(connection, src);
+    if (kept.key.length > 0) {
+      return { side, file: src, key: kept.key };
+    }
+    if (/no session store here/.test(kept.reason)) {
+      budget.storeless = kept.reason;
+    }
+    return { side, file: src, key: '', reason: kept.reason };
+  });
+}
+
+/** The answer side of a card's HTML, without the question Anki repeats above the rule. */
+function answerHtml(html) {
+  const parts = String(html ?? '').split(/<hr\s+id\s*=\s*["']?answer["']?\s*\/?>/i);
+  return parts[parts.length - 1];
 }
 
 /** A note as AnkiConnect's notesInfo spells one, read into this plugin's Note. */
@@ -244,8 +363,7 @@ function deckQuery(deck) {
  * note type of the person's own, the whole back is the answer.
  */
 function answerOf(html) {
-  const parts = String(html ?? '').split(/<hr\s+id\s*=\s*["']?answer["']?\s*\/?>/i);
-  return plain(parts[parts.length - 1]);
+  return plain(answerHtml(html));
 }
 
 /** Card ids as numbers, said as a sentence when there are none or one is not an id. */
@@ -285,7 +403,7 @@ function cardsKnown(connection, ids) {
 }
 
 /** A card as AnkiConnect's cardsInfo spells one, read into this plugin's Card. */
-function cardOf(info) {
+function cardOf(connection, info, budget) {
   const next = at(info, 'nextReviews');
   return {
     cardId: at(info, 'cardId'),
@@ -293,6 +411,7 @@ function cardOf(info) {
     deck: at(info, 'deckName'),
     question: plain(at(info, 'question')),
     answer: answerOf(at(info, 'answer')),
+    pictures: picturesOf(connection, at(info, 'question'), answerHtml(at(info, 'answer')), budget),
     // Queue -1 is Anki's own word for suspended; buried cards are -2 and -3, and come back by themselves.
     suspended: at(info, 'queue') === -1,
     lapses: at(info, 'lapses') ?? 0,
@@ -475,6 +594,33 @@ export default class Anki extends OrknuxPlugin {
         ],
       }),
       new OrknuxObject({
+        name: 'Picture',
+        description: 'A picture on a card, which the text names as [picture: file].',
+        properties: [
+          { name: 'side', kind: 'string', description: 'question or answer.' },
+          { name: 'file', kind: 'string', description: 'Its name in Anki\'s media folder, or its address.' },
+          {
+            name: 'key',
+            kind: 'string',
+            description: 'The session key it is kept under, for picture_view - empty where it could not be kept.',
+          },
+          { name: 'reason', kind: 'string', description: 'Why there is no key, where there is none.' },
+        ],
+      }),
+      new OrknuxObject({
+        name: 'MediaFile',
+        description: 'A media file fetched out of Anki.',
+        properties: [
+          { name: 'file', kind: 'string' },
+          { name: 'key', kind: 'string', description: 'The session key it is kept under, for picture_view.' },
+          {
+            name: 'base64',
+            kind: 'string',
+            description: 'The bytes themselves, only where there is no session to keep them in - a workflow step.',
+          },
+        ],
+      }),
+      new OrknuxObject({
         name: 'DueCard',
         description: 'A card that is due.',
         properties: [
@@ -486,6 +632,12 @@ export default class Anki extends OrknuxPlugin {
             name: 'answer',
             kind: 'string',
             description: 'What the back says, as text, without the question repeated. Not to be read out before the person answers.',
+          },
+          {
+            name: 'pictures',
+            kind: 'array',
+            of: 'Picture',
+            description: 'The card\'s pictures, each kept under a key to look at - a question can be a picture alone.',
           },
         ],
       }),
@@ -506,6 +658,7 @@ export default class Anki extends OrknuxPlugin {
           { name: 'deck', kind: 'string' },
           { name: 'question', kind: 'string', description: 'What the card asks, as text.' },
           { name: 'answer', kind: 'string', description: 'What the back says, as text, without the question repeated.' },
+          { name: 'pictures', kind: 'array', of: 'Picture', description: 'The card\'s pictures, each kept under a key to look at.' },
           { name: 'suspended', kind: 'boolean', description: 'A suspended card is never due until it is unsuspended.' },
           { name: 'lapses', kind: 'number', description: 'How many times it was forgotten after being learnt.' },
           {
@@ -563,6 +716,7 @@ export default class Anki extends OrknuxPlugin {
       new OrknuxFunctionTool({ function: 'updateNote' }),
       new OrknuxFunctionTool({ function: 'dueCards' }),
       new OrknuxFunctionTool({ function: 'cards' }),
+      new OrknuxFunctionTool({ function: 'picture' }),
       new OrknuxFunctionTool({ function: 'answerCards' }),
       new OrknuxFunctionTool({ function: 'suspendCards' }),
       new OrknuxFunctionTool({ function: 'unsuspendCards' }),
@@ -660,6 +814,13 @@ each with its \`cardId\`, its question and its answer. Leave the deck out to
 review everything due.
 
 ## One card at a time
+
+A card with a picture says \`[picture: file]\` in its text and lists it under
+\`pictures\` with a key. You cannot see a picture from its name: look at it with
+\`picture_view\` and that key before asking or judging the card. A question that
+is only a picture is a real card - show or describe what it asks, never skip it
+as empty. Where a picture has no key, its \`reason\` says why; \`anki_picture\`
+fetches one that was not fetched.
 
 1. Ask the question - the question only. The answer is there so you can judge
    what the person says; reading it out first spoils the card.
@@ -980,6 +1141,7 @@ At the end, say how many cards were reviewed and how many were forgotten.`,
           const due = Array.isArray(ids) ? ids : [];
           const capped = inReviewOrder(connection, due).slice(0, Math.max(0, Math.min(limit, MOST)));
           const infos = capped.length === 0 ? [] : ask(connection, 'cardsInfo', { cards: capped });
+          const budget = { left: MOST_PICTURES };
           return {
             count: due.length,
             cards: (Array.isArray(infos) ? infos : []).map((card) => ({
@@ -988,6 +1150,7 @@ At the end, say how many cards were reviewed and how many were forgotten.`,
               deck: at(card, 'deckName'),
               question: plain(at(card, 'question')),
               answer: answerOf(at(card, 'answer')),
+              pictures: picturesOf(connection, at(card, 'question'), answerHtml(at(card, 'answer')), budget),
             })),
           };
         },
@@ -1011,7 +1174,49 @@ At the end, say how many cards were reviewed and how many were forgotten.`,
         run: (connection, cardIds) => {
           const ids = cardIdsOf(cardIds);
           const { known, missing } = cardsKnown(connection, ids);
-          return { cards: ids.filter((id) => known.has(id)).map((id) => cardOf(known.get(id))), missing };
+          const budget = { left: MOST_PICTURES };
+          return { cards: ids.filter((id) => known.has(id)).map((id) => cardOf(connection, known.get(id), budget)), missing };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'picture',
+        description:
+          'Fetches one picture out of Anki\'s media folder by its file name - the name a card\'s text gives as ' +
+          '[picture: file], or the src of an <img> in a note\'s field - and keeps it under a key, for ' +
+          'picture_view to show you or any tool that attaches a file. dueCards and cards already fetch a ' +
+          'card\'s pictures; this is for the ones they did not, and for a note findNotes found.',
+        params: [
+          {
+            name: 'anki',
+            type: 'connection',
+            description: 'Which Anki to ask: an AnkiConnect connection, which carries its address and key.',
+          },
+          { name: 'file', type: 'string', description: 'The media file\'s name, as the card names it: paste-1a2b.png.' },
+        ],
+        returnType: 'MediaFile',
+        run: (connection, file) => {
+          const name = typeof file === 'string' ? file.replace(/^\[picture:\s*|\]$/g, '').trim() : '';
+          if (name.length === 0) {
+            throw new Error('no file was named - a card names its pictures as [picture: file]');
+          }
+          if (isAddress(name)) {
+            throw new Error(`${name} is an address, not a file in Anki - look at it by its address`);
+          }
+          const kept = keepPicture(connection, name);
+          if (kept.key.length > 0) {
+            return { file: name, key: kept.key };
+          }
+          /*
+           * The bytes go back only where there is no session to keep them in -
+           * a workflow step, which hands them on. Inside a session a store that
+           * refused (too large, too many keys) is said, because an agent handed
+           * a wall of base64 instead can do nothing with it.
+           */
+          if (kept.base64 !== undefined && /no session store here/.test(kept.reason)) {
+            return { file: name, key: '', base64: kept.base64 };
+          }
+          throw new Error(kept.reason);
         },
       }),
 

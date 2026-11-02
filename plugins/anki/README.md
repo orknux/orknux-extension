@@ -25,11 +25,17 @@ list in a workflow, passed by id from an agent:
 - `addBasicNotes` - several at once, each added or skipped with the reason.
 - `dueCards` - how many cards are due, with both sides of each.
 - `cards` - cards by id: both sides, and when each answer would show one next.
+- `picture` - one picture out of Anki's media folder, by its file name.
 - `answerCards` - record how each card went, 1 Again to 4 Easy, as Anki's
   buttons do. Only a due card is answered; anything else is skipped with the
   reason.
 - `suspendCards`, `unsuspendCards` - set a card aside, and bring it back.
 - `sync` - with AnkiWeb, so new cards reach your phone.
+
+A card's pictures are not dropped: its text says `[picture: file]` where one
+was, and `dueCards` and `cards` fetch each picture into the session's store
+under a key, so an agent can look at it with `picture_view` - a card whose
+question is only a picture can be asked like any other.
 
 All of them are offered to agents as tools, with two skills: writing cards worth
 reviewing, and taking somebody through their due cards so that each answer is
