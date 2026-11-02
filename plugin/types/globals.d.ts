@@ -256,6 +256,14 @@ type OrknuxResponse =
     };
 
 /**
+ * What a WebSocket exchange came to: a reply per message, each also parsed as
+ * JSON or null; or why it stopped, with the replies that came before it did.
+ */
+type OrknuxSocketExchange =
+  | { replies: string[]; json: unknown[]; error?: undefined }
+  | { error: string; replies: string[]; json: unknown[] };
+
+/**
  * A binary answer: the bytes as base64, and what they claim to be. Base64 is
  * the one shape bytes have in a sandbox where everything crosses as text.
  */
@@ -608,6 +616,21 @@ declare const orknux: {
      * survive being read as a string. Capped at 5 MB of bytes.
      */
     download(url: string, headers?: Record<string, string>): OrknuxBinaryResponse;
+
+    /**
+     * Talks to a WebSocket — `ws`, `wss`, or an `http`/`https` address spoken
+     * as one, which is how a connection stores it. Opens it, sends each
+     * message and waits for one text reply to it, then closes it, all inside
+     * this call: the guest never holds the socket. An object message is sent
+     * as JSON. At most 50 messages; `timeoutMs` is the wait for each reply,
+     * 30 seconds at most. Under `NETWORK_REQUEST` and the proxy rules, like a
+     * request — the reach is the same.
+     */
+    websocket(
+      url: string,
+      messages: string | object | readonly (string | object)[],
+      options?: { headers?: Record<string, string>; timeoutMs?: number },
+    ): OrknuxSocketExchange;
   };
 
   /**

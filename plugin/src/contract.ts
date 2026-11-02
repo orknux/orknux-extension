@@ -466,6 +466,11 @@ function ungrantedHelpers(): OrknuxHelpers {
       post: refused('NETWORK_REQUEST'),
       upload: refused('NETWORK_REQUEST'),
       download: refused('NETWORK_REQUEST'),
+      websocket: (): { error: string; replies: string[]; json: unknown[] } => ({
+        error: 'this plugin was not granted NETWORK_REQUEST',
+        replies: [],
+        json: [],
+      }),
     },
     /*
      * Crypto is not granted, so there is no "you were not granted this" to

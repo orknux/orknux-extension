@@ -38,10 +38,11 @@
  * `teams` wears the Microsoft mark, because no Teams-specific glyph is
  * published.
  *
- * Every plugin left wears a real mark, so nothing is hand-drawn here now — but
- * the table for it stays, because a plugin fronting no service belongs in this
- * file too, so that every icon in the repository comes out of one place and
- * every one of them has both variants.
+ * MuseScore is the exception: neither collection publishes its mark, so its
+ * plugin wears a glyph drawn here - two beamed notes - rather than a copy of
+ * the logo made by hand. Drawn here and not beside the plugin, so that every
+ * icon in the repository comes out of one place and every one of them has
+ * both variants.
  *
  *     docker compose run --rm dev npm run build:icons --workspace @orknux/plugins
  */
@@ -82,11 +83,26 @@ const TITLES = { slack: 'Slack', microsoft: 'Microsoft' };
  * The ones with nothing to borrow, drawn as strokes rather than filled paths —
  * which is why they would carry their weight and caps with them.
  *
- * Empty today: every plugin left fronts a service with a mark. The loop below
- * stays because the next plugin without one belongs here rather than having a
- * hand-written file beside it, which is how an icon ends up with one variant.
+ * MuseScore is here because simple-icons and Font Awesome both lack its mark:
+ * two eighth notes under one beam, which says "music notation" without
+ * pretending to be the logo. The next plugin without a mark belongs here too,
+ * rather than having a hand-written file beside it, which is how an icon ends
+ * up with one variant.
  */
-const DRAWN = [];
+const DRAWN = [
+  {
+    plugin: 'musescore',
+    title: 'MuseScore',
+    paths: [
+      'M4.5 17.5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0',
+      'M14.5 15.5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0',
+      'M9.5 17.5V5.5',
+      'M19.5 15.5V3.5',
+      'M9.5 5.5L19.5 3.5',
+      'M9.5 8.5L19.5 6.5',
+    ],
+  },
+];
 
 /** One mark, however its collection spells one. */
 function markOf({ from, icon }) {
@@ -145,7 +161,7 @@ for (const entry of BRANDED) {
 for (const drawn of DRAWN) {
   write(
     drawn.plugin,
-    (variant) => `  ${drawn.title}, for ${variant.for}. Drawn here; it fronts no service and has no mark.`,
+    (variant) => `  ${drawn.title}, for ${variant.for}. Drawn here, because neither collection publishes its mark.`,
     '0 0 24 24',
     (variant) =>
       `  <title>${drawn.title}</title>\n` +

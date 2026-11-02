@@ -1,0 +1,15 @@
+{
+  "$schema": "https://orknux.ai/marketplace/plugin.schema.json",
+  "key": "musescore",
+  "name": "MuseScore",
+  "author": "Orknux",
+  "tags": [
+    "music",
+    "notation",
+    "creative"
+  ],
+  "summary": "Read and write the score open in MuseScore 4 - notes, lyrics, tempo and titles - through a small bridge plugin, with every change one Undo step.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "descriptionPath": "README.md"
+}

@@ -4025,6 +4025,232 @@ test('anki answers only the due cards it was given, and says why it skipped the 
   }
 });
 
+test('the musescore plugin declares what the server would accept', async () => {
+  const inspected = await inspect(shipped('musescore'));
+
+  assert.equal(inspected.id, 'musescore');
+  assert.deepEqual(validate(inspected), []);
+
+  /* A connection kind of its own, with the page to set the bridge up and a check that it is the bridge. */
+  assert.equal(inspected.connectionTypes.length, 1);
+  const [kind] = inspected.connectionTypes;
+  assert.equal(kind.name, 'musescore');
+  assert.equal(kind.label, 'MuseScore');
+  assert.equal(kind.defaultUrl, 'http://localhost:8084');
+  assert.equal(kind.checks, true);
+  /* Where the bridge comes from, and the exposure a person has to know about before they run it. */
+  assert.match(kind.guide, /raw\.githubusercontent\.com\/michjak-szymanski\/orknux-extension\/main\/plugins\/musescore\/bridge\/orknux-bridge\.qml/);
+  assert.match(kind.guide, /every network interface/);
+  assert.match(kind.guide, /property string key/);
+  assert.ok(kind.guide.length <= 4000, `the guide is ${kind.guide.length} characters`);
+
+  for (const declared of inspected.functions) {
+    assert.deepEqual(
+      [declared.params[0].name, declared.params[0].type],
+      ['musescore', 'connection'],
+      `${declared.name} takes the MuseScore first`,
+    );
+  }
+  assert.deepEqual(inspected.permissions, []);
+  assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
+  const names = [
+    'score', 'read', 'selection', 'write', 'writePassages', 'appendMeasures', 'setDetails', 'setTempo',
+    'setTimeSignature', 'addLyrics', 'addText', 'undo', 'exportScore',
+  ];
+  assert.deepEqual(inspected.functions.map((declared) => declared.name), names);
+  assert.deepEqual(inspected.tools.map((declared) => declared.name), names);
+  assert.deepEqual(inspected.skills.map((skill) => skill.id), ['musescore-writing', 'musescore-lyrics']);
+});
+
+/** A stand-in for the bridge: answers each message the way orknux-bridge.qml would, from a table. */
+function bridgeAnswering(answer) {
+  const sent = [];
+  const door = (url, messages, options) => {
+    sent.push({ url, messages, options });
+    const replies = messages.map((message) => {
+      const said = answer(message);
+      return typeof said === 'string' ? said : JSON.stringify(said);
+    });
+    const json = replies.map((reply) => {
+      try {
+        return JSON.parse(reply);
+      } catch {
+        return null;
+      }
+    });
+    return { replies, json };
+  };
+  return { door, sent };
+}
+
+const ok = (result) => ({ bridge: 'orknux', ok: true, result });
+const refused = (error) => ({ bridge: 'orknux', ok: false, error });
+
+test('musescore tells the Orknux bridge from anything else answering on the port', async () => {
+  const url = new URL(`../../plugins/musescore/musescore.js`, import.meta.url);
+  const { default: MuseScore } = await import(url.href);
+  const [kind] = Object.create(MuseScore.prototype).connectionTypes();
+  const connection = {
+    id: 1, type: 'HTTP', pluginType: 'musescore/musescore', url: 'http://studio.lan:8084', authType: 'NONE', headers: {},
+  };
+  const hello = ok({ protocol: 1, bridgeVersion: '0.1.0', musescore: '4.7.6', scoreOpen: true, title: 'Little Star' });
+
+  const front = globalThis.orknux.http.websocket;
+  try {
+    /* The bridge itself: hello and the open score, asked in one exchange. */
+    const bridge = bridgeAnswering((message) =>
+      message.command === 'hello' ? hello : ok({ title: 'Little Star', measures: 12, staves: 2 }),
+    );
+    globalThis.orknux.http.websocket = bridge.door;
+    assert.deepEqual(kind.check(connection), {
+      ok: true,
+      message: 'Orknux bridge 0.1.0 in MuseScore 4.7.6: Little Star, 12 measures on 2 staves',
+    });
+    assert.equal(bridge.sent.length, 1, 'one socket for the whole check');
+    assert.equal(bridge.sent[0].url, 'http://studio.lan:8084');
+    assert.deepEqual(bridge.sent[0].messages, [{ command: 'hello', args: {} }, { command: 'score', args: {} }]);
+
+    /* MuseScore with nothing open is still a working bridge. */
+    globalThis.orknux.http.websocket = bridgeAnswering((message) =>
+      message.command === 'hello' ? hello : refused('no score is open in MuseScore - open or create one first'),
+    ).door;
+    assert.deepEqual(kind.check(connection), { ok: true, message: 'Orknux bridge 0.1.0 in MuseScore 4.7.6, no score open' });
+
+    /* Another WebSocket server on the port - mcp-musescore's own bridge, say - is not ours, however well it answered. */
+    globalThis.orknux.http.websocket = bridgeAnswering(() => ({ status: 'error', message: 'Unknown command: undefined' })).door;
+    assert.throws(
+      () => kind.check(connection),
+      /http:\/\/studio\.lan:8084 is not the Orknux bridge: it answered "\{"status":"error"/,
+    );
+
+    /* Nor is one that answers in something other than JSON. */
+    globalThis.orknux.http.websocket = bridgeAnswering(() => 'pong').door;
+    assert.throws(() => kind.check(connection), /is not the Orknux bridge: it answered "pong"/);
+
+    /* A bridge of another protocol is refused with where to get this one. */
+    globalThis.orknux.http.websocket = bridgeAnswering((message) =>
+      message.command === 'hello' ? ok({ protocol: 2, bridgeVersion: '9.0.0', musescore: '5.0.0' }) : ok({}),
+    ).door;
+    const other = kind.check(connection);
+    assert.equal(other.ok, false);
+    assert.match(other.message, /speaks protocol 2 and this plugin speaks 1 - install the bridge from https:\/\/raw\.githubusercontent\.com/);
+
+    /* A bridge with a key set, asked without one, says what to do about it. */
+    globalThis.orknux.http.websocket = bridgeAnswering(() => ({
+      bridge: 'orknux', ok: false, keyRequired: true, error: 'this bridge has a key set, and the command came without one',
+    })).door;
+    assert.throws(() => kind.check(connection), /the Orknux bridge has a key set - choose API key/);
+
+    /* Nothing listening is said as that, with the likeliest reason. */
+    globalThis.orknux.http.websocket = () => ({ error: 'Connection refused', replies: [], json: [] });
+    assert.throws(
+      () => kind.check(connection),
+      /could not reach the Orknux bridge at http:\/\/studio\.lan:8084: Connection refused - is MuseScore running, with Plugins › Orknux bridge started/,
+    );
+  } finally {
+    globalThis.orknux.http.websocket = front;
+  }
+});
+
+test('musescore puts the key in every message, and batches what one call needs into one exchange', async () => {
+  const url = new URL(`../../plugins/musescore/musescore.js`, import.meta.url);
+  const { default: MuseScore } = await import(url.href);
+  const functions = Object.create(MuseScore.prototype).functions();
+  const call = (name) => functions.find((one) => one.name === name);
+  const keyed = {
+    id: 2, type: 'HTTP', pluginType: 'musescore/musescore', url: 'http://localhost:8084',
+    authType: 'API_KEY', secret: 's3cret', headers: { 'X-API-Key': 's3cret' },
+  };
+
+  assert.throws(() => call('score').run(null), /no MuseScore connection was given/);
+  assert.throws(() => call('score').run(7), /not a MuseScore connection of this plugin's kind/);
+
+  const front = globalThis.orknux.http.websocket;
+  try {
+    const written = (args) => ok({
+      staff: args.staff, voice: args.voice, from: args.measure, to: args.measure, written: 3, appendedMeasures: 0,
+      measures: 8, readBack: [{ measure: args.measure, staff: args.staff, voice: args.voice, notation: args.notation }],
+    });
+    const bridge = bridgeAnswering((message) => {
+      if (message.command === 'write') {
+        return message.args.staff === 9 ? refused('staff 9 is not in the score, which has staves 1 to 2') : written(message.args);
+      }
+      if (message.command === 'undo') return ok({ undone: true, measures: 8 });
+      return ok({ from: 3, to: 6, measures: 8, timeSignatures: [], voices: [], lyrics: [], markings: [] });
+    });
+    globalThis.orknux.http.websocket = bridge.door;
+
+    /* One write: the arguments the bridge takes, the key in the message, a beat of 1 left to the bridge. */
+    const one = call('write').run(keyed, 1, 5, 'E5/4 D5/4 C5/2', 1, 1);
+    assert.deepEqual(bridge.sent[0].messages, [
+      { command: 'write', args: { staff: 1, measure: 5, voice: 1, notation: 'E5/4 D5/4 C5/2' }, key: 's3cret' },
+    ]);
+    assert.equal(one.readBack[0].notation, 'E5/4 D5/4 C5/2');
+
+    /* Several passages are one socket, each written or refused on its own. */
+    const many = call('writePassages').run(keyed, [
+      { staff: 1, measure: 1, notation: 'C5/2 G4/2' },
+      { staff: 9, measure: 1, notation: 'C3/1' },
+      { staff: 2, measure: 1, notation: '[C3 G3]/1', voice: 2, beat: 3 },
+    ]);
+    const batch = bridge.sent[1].messages;
+    assert.equal(batch.length, 3);
+    assert.ok(batch.every((message) => message.command === 'write' && message.key === 's3cret'));
+    assert.deepEqual(batch[2].args, { staff: 2, measure: 1, voice: 2, notation: '[C3 G3]/1', beat: 3 });
+    assert.equal(many.written, 2);
+    assert.deepEqual(many.results[1], { passage: 2, error: 'staff 9 is not in the score, which has staves 1 to 2' });
+    assert.equal(many.results[2].written.staff, 2);
+
+    /* Undo of three steps is three commands over one socket. */
+    assert.deepEqual(call('undo').run(keyed, 3), { steps: 3, measures: 8 });
+    assert.deepEqual(bridge.sent[2].messages.map((message) => message.command), ['undo', 'undo', 'undo']);
+
+    /* A read asks for a range, capped at what one read takes. */
+    call('read').run(keyed, 3, 100, [2]);
+    assert.deepEqual(bridge.sent[3].messages[0].args, { from: 3, to: 66, staves: [2] });
+
+    /* Lyrics cross as syllables. */
+    call('addLyrics').run(keyed, 1, 1, 'Twin- kle  twin- kle', 1, 1, 1);
+    assert.deepEqual(bridge.sent[4].messages[0].args.syllables, ['Twin-', 'kle', 'twin-', 'kle']);
+
+    /* Refusals in words, before anything is sent. */
+    const before = bridge.sent.length;
+    assert.throws(() => call('write').run(keyed, 1, 0, 'C4/4', 1, 1), /measure has to be a whole number from 1, and was 0/);
+    assert.throws(() => call('write').run(keyed, 1, 1, '  ', 1, 1), /there is no notation to write/);
+    assert.throws(() => call('writePassages').run(keyed, []), /there are no passages/);
+    assert.throws(
+      () => call('writePassages').run(keyed, [{ staff: 1, measure: 1, notation: 'C4/4' }, { staff: 1, notation: 'C4/4' }]),
+      /passage 2: measure has to be a whole number from 1, and was null/,
+    );
+    assert.throws(() => call('undo').run(keyed, 21), /one call takes back at most 20/);
+    assert.throws(() => call('setDetails').run(keyed, { tittle: 'x' }), /tittle is not something a score has/);
+    assert.throws(() => call('setTempo').run(keyed, 0, 1, 1, ''), /bpm is quarter notes per minute, 5 to 999/);
+    assert.throws(() => call('addText').run(keyed, 'Coda', 4, 'footer', 1, 1), /kind "footer" is not one of staff, system, expression or rehearsal/);
+    assert.throws(() => call('addLyrics').run(keyed, 1, 1, ' ', 1, 1, 1), /there are no lyrics/);
+    assert.equal(bridge.sent.length, before, 'nothing refused here reached the bridge');
+
+    /* What the bridge refuses comes back in its words, named by the command. */
+    globalThis.orknux.http.websocket = bridgeAnswering(() =>
+      refused('"H4" in "H4/4" is not a pitch - write a letter, an optional # or b, and an octave: C4, F#5, Bb3'),
+    ).door;
+    assert.throws(() => call('write').run(keyed, 1, 1, 'H4/4', 1, 1), /MuseScore refused write: "H4" in "H4\/4" is not a pitch/);
+
+    /* A wrong key is said as that. */
+    globalThis.orknux.http.websocket = bridgeAnswering(() => ({
+      bridge: 'orknux', ok: false, keyRequired: true, error: 'the key does not match the one set in this bridge',
+    })).door;
+    assert.throws(() => call('score').run(keyed), /the Orknux bridge refused this connection's API key/);
+
+    /* A socket that drops part-way says how far it got. */
+    globalThis.orknux.http.websocket = () => ({
+      error: 'the connection closed', replies: [JSON.stringify(ok({ undone: true, measures: 8 }))], json: [ok({ undone: true, measures: 8 })],
+    });
+    assert.throws(() => call('undo').run(keyed, 2), /could not reach the Orknux bridge at http:\/\/localhost:8084: the connection closed/);
+  } finally {
+    globalThis.orknux.http.websocket = front;
+  }
+});
+
 test('a slack upload with nowhere to go is a thrown sentence, not a request', async () => {
   /*
    * Both the connection and the token are optional at load so the plugin
@@ -4484,6 +4710,7 @@ test('the sweeps below are sweeping something', () => {
     'github',
     'jenkins',
     'jira',
+    'musescore',
     'prometheus',
     'slack',
     'teams',
