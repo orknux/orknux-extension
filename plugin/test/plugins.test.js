@@ -2131,11 +2131,11 @@ test('the jira plugin declares what the server would accept', async () => {
   assert.deepEqual(inspected.capabilities, ['NETWORK_REQUEST']);
   assert.deepEqual(
     inspected.functions.map((declared) => declared.name),
-    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged', 'isMentioned'],
+    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'rank', 'groupMembers', 'timeLogged', 'isMentioned'],
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'groupMembers', 'timeLogged'],
+    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'rank', 'groupMembers', 'timeLogged'],
   );
   /* The project's own fields ride in a map, optional and empty by default, last. */
   const create = inspected.functions.find((declared) => declared.name === 'createIssue');
@@ -2149,7 +2149,7 @@ test('the jira plugin declares what the server would accept', async () => {
    */
   assert.deepEqual(
     inspected.objects.map((shape) => shape.name),
-    ['Search', 'Comment', 'Attached', 'Moved', 'Raised', 'Link', 'Worklog', 'LoggedDay', 'TimeLogged', 'Person', 'Members', 'Linked', 'Updated', 'Field', 'Form', 'Issue'],
+    ['Search', 'Comment', 'Attached', 'Moved', 'Raised', 'Link', 'Worklog', 'LoggedDay', 'TimeLogged', 'Person', 'Members', 'Linked', 'Ranked', 'Updated', 'Field', 'Form', 'Issue'],
   );
   const issue = inspected.objects.find((shape) => shape.name === 'Issue');
   assert.equal(issue.properties.length, 14);
@@ -2171,12 +2171,12 @@ test('the jira plugin declares what the server would accept', async () => {
 
   assert.deepEqual(
     inspected.functions.map((one) => one.returnType),
-    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged', 'boolean'],
+    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Ranked', 'Members', 'TimeLogged', 'boolean'],
   );
   /* A proxy carries its function's own return, so the tools agree by construction. */
   assert.deepEqual(
     inspected.tools.map((one) => one.returnType),
-    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Members', 'TimeLogged'],
+    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Ranked', 'Members', 'TimeLogged'],
   );
   /* `Search` holds the same shape `openIssue` answers, rather than a second one. */
   const search = inspected.objects.find((shape) => shape.name === 'Search');
@@ -2257,6 +2257,59 @@ test('jira attach sends what a key holds as one multipart file, whatever its len
     });
   } finally {
     globalThis.orknux.session.store = store;
+    globalThis.orknux.http.request = door;
+  }
+});
+
+test('jira rank puts an issue above, below, or at the top of what a JQL selects, and reads a refusal as one', async () => {
+  const url = new URL(`../../plugins/jira/jira.js`, import.meta.url);
+  const { default: Jira } = await import(url.href);
+  const rankOn = (connection) => {
+    const plugin = Object.create(Jira.prototype);
+    Object.defineProperty(plugin, 'settings', { value: Object.freeze({ jira: connection }) });
+    return plugin.functions().find((one) => one.name === 'rank').run;
+  };
+
+  const door = globalThis.orknux.http.request;
+  const asked = [];
+  try {
+    globalThis.orknux.http.request = (what) => {
+      asked.push(what);
+      if (what.url.includes('/search')) return { status: 200, headers: {}, json: { issues: [{ key: 'OKO-4100' }] } };
+      return { status: 204, headers: {}, json: null };
+    };
+
+    // The top of a sprint, on Server: the sprint's first issue by rank, then the move above it.
+    const top = rankOn(serverJira)('OKO-4366', '', '', 'sprint = "Do dobierania OKO" ORDER BY created DESC');
+    assert.deepEqual(top, { key: 'OKO-4366', before: 'OKO-4100', after: null, url: 'https://jira.example.com/browse/OKO-4366' });
+    const searched = new URL(asked[0].url).searchParams.get('jql');
+    assert.equal(searched, '(sprint = "Do dobierania OKO") AND key != OKO-4366 ORDER BY Rank ASC');
+    assert.equal(asked[1].method, 'PUT');
+    assert.equal(asked[1].url, 'https://jira.example.com/rest/agile/1.0/issue/rank');
+    assert.deepEqual(asked[1].body, { issues: ['OKO-4366'], rankBeforeIssue: 'OKO-4100' });
+
+    // On Cloud the search is its POST; directly below another issue needs no search at all.
+    asked.length = 0;
+    rankOn(cloudJira)('OKO-4366', '', '', 'sprint = 12');
+    assert.equal(asked[0].url, 'https://x.atlassian.net/rest/api/3/search/jql');
+    asked.length = 0;
+    const below = rankOn(cloudJira)('OKO-4366', '', 'OKO-4200', '');
+    assert.equal(asked.length, 1);
+    assert.deepEqual(asked[0].body, { issues: ['OKO-4366'], rankAfterIssue: 'OKO-4200' });
+    assert.equal(below.after, 'OKO-4200');
+
+    // Exactly one of the three.
+    assert.throws(() => rankOn(serverJira)('OKO-4366', 'OKO-1', 'OKO-2', ''), /exactly one of before/);
+    assert.throws(() => rankOn(serverJira)('OKO-4366', '', '', ''), /exactly one of before/);
+
+    // A 207 is Jira refusing the move, per issue, and is said as a refusal.
+    globalThis.orknux.http.request = () => ({
+      status: 207,
+      headers: {},
+      json: { entries: [{ issueKey: 'OKO-4366', status: 400, errors: ['The issue is not on a board with ranking'] }] },
+    });
+    assert.throws(() => rankOn(serverJira)('OKO-4366', 'OKO-4100', '', ''), /did not rank OKO-4366: The issue is not on a board with ranking/);
+  } finally {
     globalThis.orknux.http.request = door;
   }
 });

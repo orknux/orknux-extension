@@ -6,7 +6,7 @@ workflow that can read one and not write the other is a workflow somebody
 finishes by hand.
 
 So: find issues by JQL, open one whole, comment on it, move it through its
-workflow, and raise a new one. Every call is made by the server on the plugin's
+workflow, put it where it belongs in a sprint or backlog, and raise a new one. Every call is made by the server on the plugin's
 behalf under `NETWORK_REQUEST` — the plugin never holds the token.
 
 | Function | |
@@ -20,6 +20,7 @@ behalf under `NETWORK_REQUEST` — the plugin never holds the token.
 | `createIssue(project, type, summary, description, fields = {})` | Raises a new one. `fields` is whatever else the project asks for, keyed by name as `form` lists it. |
 | `updateIssue(key, fields)` | Sets fields on an existing issue — the same map, resolved against that issue's own edit form. |
 | `link(from, relation, to)` | Links two issues, the relation said as a verb — `"depends on"`, `"blocks"`, `"relates to"` — and matched against this Jira's link types. |
+| `rank(key, before = "", after = "", topOf = "")` | Moves an issue in its board's order, as dragging its card does: directly above `before`, directly below `after`, or to the top of what the JQL `topOf` selects - `sprint = "Sprint 12"` for the top of a sprint. Jira Software's rank API, the same on Cloud and Server. |
 | `groupMembers(group)` | Who is in a Jira group, by name — the way a team is usually kept. |
 | `timeLogged(user, from = "", to = "")` | What one person logged in Jira's work log, day by day. Both dates empty means last week, Monday to Sunday. |
 | `isMentioned(text, user = "")` | Whether a comment or description mentions a user — `[~username]` on Server, `[~accountid:…]` on Cloud. Empty means the connection's own account, so a **Function** condition can ask whether the bot was mentioned. A condition, not an agent tool. |

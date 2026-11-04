@@ -960,6 +960,17 @@ export default class Jira extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'Ranked',
+        description: 'Where an issue now sits in its board\'s order.',
+        properties: [
+          { name: 'key', kind: 'string', description: 'The issue that moved.' },
+          { name: 'before', kind: 'string', description: 'The issue it now sits directly above, or null.' },
+          { name: 'after', kind: 'string', description: 'The issue it now sits directly below, or null.' },
+          { name: 'url', kind: 'string', description: 'The link for a person to open.' },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'Updated',
         description: 'An issue after some of its fields were changed.',
         properties: [
@@ -1605,6 +1616,7 @@ in use, its entries appear here too, but its approval state does not.`,
       new OrknuxFunctionTool({ function: 'createIssue' }),
       new OrknuxFunctionTool({ function: 'updateIssue' }),
       new OrknuxFunctionTool({ function: 'link' }),
+      new OrknuxFunctionTool({ function: 'rank' }),
       new OrknuxFunctionTool({ function: 'groupMembers' }),
       new OrknuxFunctionTool({ function: 'timeLogged' }),
     ];
@@ -2002,6 +2014,85 @@ in use, its entries appear here too, but its approval state does not.`,
             relation: outward ? at(found, 'outward') : at(found, 'inward'),
             to: target,
             url: `${root(this.settings)}/browse/${source}`,
+          };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'rank',
+        description:
+          'Moves an issue up or down its board\'s order - what dragging its card does in a backlog or ' +
+          'a sprint. Pass the issue (PROJ-123) and one of: before, the issue it should sit directly ' +
+          'above; after, the issue it should sit directly below; or topOf, a JQL whose first issue in ' +
+          'rank order it should go above - sprint = "Sprint 12" puts it at the top of that sprint, ' +
+          'project = PROJ AND sprint is EMPTY at the top of the backlog. Answers where it ended up.',
+        params: [
+          { name: 'key', type: 'string' },
+          { name: 'before', type: 'string', required: false, default: '' },
+          { name: 'after', type: 'string', required: false, default: '' },
+          { name: 'topOf', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'Ranked',
+        run: (key, before, after, topOf) => {
+          const named = typeof key === 'string' ? key.trim() : '';
+          const above = typeof before === 'string' ? before.trim() : '';
+          const below = typeof after === 'string' ? after.trim() : '';
+          const query = typeof topOf === 'string' ? topOf.trim() : '';
+          if (named.length === 0) {
+            throw new Error('there is no issue key to rank');
+          }
+          const given = [above, below, query].filter((one) => one.length > 0).length;
+          if (given !== 1) {
+            throw new Error(
+              'rank takes exactly one of before (the issue to sit above), after (the issue to sit below) ' +
+                'or topOf (a JQL to go to the top of)',
+            );
+          }
+
+          /*
+           * The top of a list is "above whatever is first in it", which is
+           * the only way Jira's rank can be asked for: there is no "top", only
+           * before and after another issue. The issue itself is left out of
+           * the search, so asking twice is not asking it to go above itself,
+           * and the caller's own ORDER BY is dropped for the rank's.
+           */
+          let target = above;
+          if (query.length > 0) {
+            const jql = `(${query.replace(/\s+ORDER\s+BY\s+.*$/i, '')}) AND key != ${named} ORDER BY Rank ASC`;
+            const found = isCloud(this.settings)
+              ? call(this.settings, { method: 'POST', path: '/rest/api/3/search/jql', body: { jql, maxResults: 1, fields: ['summary'] } })
+              : call(this.settings, { path: `/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=1&fields=summary` });
+            const first = (at(found, 'issues') ?? [])[0];
+            if (first === undefined) {
+              throw new Error(`nothing else matches ${query}, so there is nothing to go above; ${named} is already at the top of it`);
+            }
+            target = String(at(first, 'key'));
+          }
+          if (target.toLowerCase() === named.toLowerCase() || below.toLowerCase() === named.toLowerCase()) {
+            throw new Error(`${named} cannot be ranked against itself`);
+          }
+
+          /*
+           * Jira Software's own API, the same on Cloud and Server. It answers
+           * 204 when the move is made and 207 when it is not, with the reason
+           * per issue - a 207 is a refusal, not a success, and is read as one.
+           */
+          const answered = call(this.settings, {
+            method: 'PUT',
+            path: '/rest/agile/1.0/issue/rank',
+            body: target.length > 0 ? { issues: [named], rankBeforeIssue: target } : { issues: [named], rankAfterIssue: below },
+          });
+          const refused = (at(answered, 'entries') ?? []).flatMap((one) =>
+            Number(at(one, 'status')) >= 400 ? at(one, 'errors') ?? [`answered ${at(one, 'status')}`] : [],
+          );
+          if (refused.length > 0) {
+            throw new Error(`Jira did not rank ${named}: ${refused.join('; ')}`);
+          }
+          return {
+            key: named,
+            before: target.length > 0 ? target : null,
+            after: below.length > 0 ? below : null,
+            url: `${root(this.settings)}/browse/${named}`,
           };
         },
       }),
