@@ -2135,7 +2135,7 @@ test('the jira plugin declares what the server would accept', async () => {
   );
   assert.deepEqual(
     inspected.tools.map((declared) => declared.name),
-    ['search', 'openIssue', 'comment', 'attach', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'rank', 'groupMembers', 'timeLogged'],
+    ['search', 'openIssue', 'comment', 'attach', 'attachBase64', 'transition', 'form', 'createIssue', 'updateIssue', 'link', 'rank', 'groupMembers', 'timeLogged'],
   );
   /* The project's own fields ride in a map, optional and empty by default, last. */
   const create = inspected.functions.find((declared) => declared.name === 'createIssue');
@@ -2176,7 +2176,7 @@ test('the jira plugin declares what the server would accept', async () => {
   /* A proxy carries its function's own return, so the tools agree by construction. */
   assert.deepEqual(
     inspected.tools.map((one) => one.returnType),
-    ['Search', 'Issue', 'Comment', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Ranked', 'Members', 'TimeLogged'],
+    ['Search', 'Issue', 'Comment', 'Attached', 'Attached', 'Moved', 'Form', 'Raised', 'Updated', 'Linked', 'Ranked', 'Members', 'TimeLogged'],
   );
   /* `Search` holds the same shape `openIssue` answers, rather than a second one. */
   const search = inspected.objects.find((shape) => shape.name === 'Search');
@@ -2257,6 +2257,44 @@ test('jira attach sends what a key holds as one multipart file, whatever its len
     });
   } finally {
     globalThis.orknux.session.store = store;
+    globalThis.orknux.http.request = door;
+  }
+});
+
+test('jira attachBase64 sends the content it is given, and says attach is the way to prefer', async () => {
+  const url = new URL(`../../plugins/jira/jira.js`, import.meta.url);
+  const { default: Jira } = await import(url.href);
+  const plugin = Object.create(Jira.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ jira: serverJira }) });
+  const tools = plugin.tools();
+  const inline = tools.find((one) => one.name === 'attachBase64');
+  const byKey = tools.find((one) => one.name === 'attach');
+
+  /* Told apart in words a model reads: the key is preferred, the content is the fallback. */
+  assert.match(byKey.description, /preferred/);
+  assert.match(byKey.description, /upload its bytes/);
+  assert.match(inline.description, /Only when the file cannot be uploaded: prefer jira_attach/);
+
+  const asked = [];
+  const door = globalThis.orknux.http.request;
+  globalThis.orknux.http.request = (what) => {
+    asked.push(what);
+    return { status: 200, headers: {}, body: '[]', json: [{ id: '502', filename: 'notes.txt', size: 5, content: 'https://jira.example.com/secure/attachment/502/notes.txt' }] };
+  };
+  try {
+    const bytes = Buffer.from(Array.from({ length: 401 }, (_, at) => (at * 13 + 5) % 256));
+    const answer = inline.run('OKO-7', 'trace.bin', bytes.toString('base64'), 'application/x-trace');
+    assert.equal(answer.id, '502');
+    const request = asked.at(-1);
+    assert.equal(request.url, 'https://jira.example.com/rest/api/2/issue/OKO-7/attachments');
+    const boundary = /boundary=(.+)$/.exec(request.headers['content-type'])[1];
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="trace.bin"\r\n` +
+        'Content-Type: application/x-trace\r\n\r\n',
+    );
+    assert.deepEqual(Buffer.from(request.bodyBase64, 'base64'), Buffer.concat([head, bytes, Buffer.from(`\r\n--${boundary}--\r\n`)]));
+    assert.throws(() => inline.run('OKO-7', 'empty.txt', ''), /no bytes to attach/);
+  } finally {
     globalThis.orknux.http.request = door;
   }
 });

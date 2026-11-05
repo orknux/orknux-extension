@@ -1592,11 +1592,14 @@ in use, its entries appear here too, but its approval state does not.`,
       new OrknuxTool({
         name: 'attach',
         description:
-          'Attaches a file to an issue - a rendered diagram, a PDF, the source it was made from. The ' +
-          'bytes are named, never typed: pass the short contentKey the tool that made them answered ' +
-          'beside them, and a filename whose extension says what they are (flow.png, flow.puml). ' +
-          'Answers the attachment and the issue\'s link. On Jira Server a comment shows an attached ' +
-          'picture where it says !flow.png! by its filename.',
+          'Attaches a file to an issue - a rendered diagram, a PDF, a screenshot, a log. The preferred ' +
+          'way to attach anything: the bytes are named, never typed. Pass the short contentKey the tool ' +
+          'that made the file answered beside it - or, calling over MCP with a file on your own machine, ' +
+          'upload its bytes as they are to the MCP server\'s files address (curl --data-binary @report.pdf; ' +
+          'the server\'s instructions say where) and pass the contentKey that answers - and a filename ' +
+          'whose extension says what they are (flow.png, flow.puml). Answers the attachment and the ' +
+          'issue\'s link. On Jira Server a comment shows an attached picture where it says !flow.png! ' +
+          'by its filename.',
         params: [
           { name: 'key', type: 'string' },
           { name: 'filename', type: 'string' },
@@ -1610,6 +1613,38 @@ in use, its entries appear here too, but its approval state does not.`,
           const held = heldUnder(contentKey);
           return attached(this.settings, key, filename, held.contentType, held.base64);
         },
+      }),
+      /*
+       * The fallback, for a caller that holds a file and has no way to upload
+       * it: the content itself, as base64. Second, and said to be second,
+       * because what attach's key avoids is exactly this - a model writing the
+       * bytes out one character at a time, and one wrong character is a
+       * refused call or a broken file.
+       */
+      new OrknuxTool({
+        name: 'attachBase64',
+        description:
+          'Attaches a file to an issue from its content written out as base64. Only when the file ' +
+          'cannot be uploaded: prefer jira_attach, which takes a contentKey - from the tool that made ' +
+          'the file, or over MCP from uploading its bytes - and never needs the content typed. Pass ' +
+          'the key (PROJ-123), a filename whose extension says what the bytes are (notes.txt), the ' +
+          'base64, and contentType where the extension does not say it. Answers the attachment and ' +
+          'the issue\'s link.',
+        params: [
+          { name: 'key', type: 'string' },
+          { name: 'filename', type: 'string' },
+          { name: 'base64', type: 'string' },
+          { name: 'contentType', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'Attached',
+        run: (key, filename, base64, contentType) =>
+          attached(
+            this.settings,
+            key,
+            filename,
+            typeof contentType === 'string' && contentType.trim().length > 0 ? contentType.trim() : null,
+            typeof base64 === 'string' ? base64 : '',
+          ),
       }),
       new OrknuxFunctionTool({ function: 'transition' }),
       new OrknuxFunctionTool({ function: 'form' }),
