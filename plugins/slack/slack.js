@@ -1114,6 +1114,173 @@ function matcherOf(groups) {
   };
 }
 
+/** A text object's words - `{type: 'mrkdwn', text}` or `{type: 'plain_text', text}` - or null. */
+function wordsOfText(said) {
+  const words = at(said, 'text');
+  return typeof words === 'string' && words.trim().length > 0 ? words : null;
+}
+
+/** What a row of buttons and menus offers, as lines: `Buttons: [Ack] [Close]`, `Options: a · b`. */
+function offeredBy(elements) {
+  const buttons = [];
+  const options = [];
+  for (const element of Array.isArray(elements) ? elements : []) {
+    if (at(element, 'type') === 'button') {
+      const label = wordsOfText(at(element, 'text'));
+      if (label !== null) buttons.push(`[${label}]`);
+    }
+    for (const option of at(element, 'options') ?? []) {
+      const label = wordsOfText(at(option, 'text'));
+      if (label !== null) options.push(label);
+    }
+  }
+  const lines = [];
+  if (buttons.length > 0) lines.push(`Buttons: ${buttons.join(' ')}`);
+  if (options.length > 0) lines.push(`Options: ${options.join(' · ')}`);
+  return lines;
+}
+
+/** One block as lines. `rich_text` says nothing here: it is a person's message, and `text` already says it. */
+function blockLines(block) {
+  switch (at(block, 'type')) {
+    case 'header': {
+      const words = wordsOfText(at(block, 'text'));
+      return words === null ? [] : [`*${words}*`];
+    }
+    case 'section': {
+      const lines = [];
+      const words = wordsOfText(at(block, 'text'));
+      if (words !== null) lines.push(words);
+      for (const field of at(block, 'fields') ?? []) {
+        const said = wordsOfText(field);
+        if (said !== null) lines.push(said);
+      }
+      const accessory = at(block, 'accessory');
+      if (accessory !== undefined && accessory !== null) lines.push(...offeredBy([accessory]));
+      return lines;
+    }
+    case 'context': {
+      const words = (at(block, 'elements') ?? [])
+        .filter((one) => at(one, 'type') === 'mrkdwn' || at(one, 'type') === 'plain_text')
+        .map(wordsOfText)
+        .filter((one) => one !== null);
+      return words.length === 0 ? [] : [words.join(' · ')];
+    }
+    case 'actions':
+      return offeredBy(at(block, 'elements'));
+    case 'image': {
+      const words = wordsOfText(at(block, 'title')) ?? at(block, 'alt_text');
+      return typeof words === 'string' && words.trim().length > 0 ? [`(image: ${words})`] : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/** One legacy attachment as lines: an alert's title, its fields, its footer. */
+function attachmentLines(attached) {
+  const lines = [];
+  const add = (value) => {
+    if (typeof value === 'string' && value.trim().length > 0) lines.push(value);
+  };
+  add(at(attached, 'pretext'));
+  add(at(attached, 'author_name'));
+  const title = at(attached, 'title');
+  if (typeof title === 'string' && title.trim().length > 0) {
+    const link = at(attached, 'title_link');
+    lines.push(typeof link === 'string' && link.trim().length > 0 ? `*${title}* (${link})` : `*${title}*`);
+  }
+  add(at(attached, 'text'));
+  for (const field of at(attached, 'fields') ?? []) {
+    const name = String(at(field, 'title') ?? '').trim();
+    const value = String(at(field, 'value') ?? '').trim();
+    add(name.length === 0 ? value : `${name}: ${value}`);
+  }
+  for (const block of at(attached, 'blocks') ?? []) lines.push(...blockLines(block));
+  add(at(attached, 'footer'));
+  if (lines.length === 0) add(at(attached, 'fallback'));
+  return lines;
+}
+
+/*
+ * Everything a message says, and not only its text - the same reading the
+ * server gives a thread (`SlackCards` there; a change to one is a change to
+ * both). An app's message - an Opsgenie alert, a CI result, a poll - carries
+ * its words in attachments and blocks, and its text is a notification line or
+ * nothing: read as text alone, an alert was an empty message and a poll a
+ * question with no options. Buttons are said as `Buttons: [Vote]`, so a model
+ * can see that a poll is voted on by button - which no bot can press.
+ */
+function cardOf(one) {
+  const own = String(at(one, 'text') ?? '').trim();
+  const card = [];
+  for (const block of at(one, 'blocks') ?? []) card.push(...blockLines(block));
+  for (const attached of at(one, 'attachments') ?? []) card.push(...attachmentLines(attached));
+  const seen = new Set([own]);
+  const fresh = [];
+  for (const line of card) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0 && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      fresh.push(trimmed);
+    }
+  }
+  if (fresh.length === 0) return own;
+  return own.length === 0 ? fresh.join('\n') : `${own}\n\n${fresh.join('\n')}`;
+}
+
+const EMOJI = /:([a-z0-9_+'-]+):/g;
+const NUMBERED = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'keycap_ten'];
+
+/**
+ * The emoji that votes for an option in a reaction poll, or why there is none.
+ *
+ * The option may be the emoji itself, a number - `:two:` where the poll
+ * numbers its options with them, else the second option line - or words found
+ * on one option line. An option line is one carrying an emoji; a poll with
+ * none, and buttons instead, is a button poll, which only a person can vote in.
+ */
+function pollEmoji(said, option) {
+  const asked = option.trim();
+  const lines = said.split('\n').map((line) => line.trim());
+  const choices = lines
+    .map((line) => ({ line, emoji: [...line.matchAll(EMOJI)].map((match) => match[1]) }))
+    .filter((one) => one.emoji.length > 0);
+
+  const own = /^:([a-z0-9_+'-]+):$/.exec(asked);
+  if (own !== null) return { choice: own[1], why: null };
+
+  if (/^\d+$/.test(asked)) {
+    const number = Number(asked);
+    const named = NUMBERED[number];
+    const numbered = choices.find((one) => named !== undefined && one.emoji.includes(named));
+    if (numbered !== undefined) return { choice: named, why: null };
+    if (number >= 1 && number <= choices.length) return { choice: choices[number - 1].emoji[0], why: null };
+  }
+
+  const wanted = folded(asked);
+  if (wanted.length > 0) {
+    const found = choices.filter((one) => folded(one.line.replace(EMOJI, ' ')).includes(wanted));
+    if (found.length === 1) return { choice: found[0].emoji[0], why: null };
+    if (found.length > 1) {
+      return { choice: null, why: `"${asked}" is on ${found.length} options: ${found.map((one) => one.line).join(' | ')} - name one by its emoji` };
+    }
+  }
+
+  if (choices.length === 0 && /^(Buttons|Options): /m.test(said)) {
+    return {
+      choice: null,
+      why:
+        'this poll is voted in with its buttons, and no bot can press one: Slack sends a press only to ' +
+        'the app that posted the poll, and only from a person. Say the choice in the thread instead.',
+    };
+  }
+  return {
+    choice: null,
+    why: `no option of this poll matches "${asked}"; it says: ${choices.length > 0 ? choices.map((one) => one.line).join(' | ') : said}`,
+  };
+}
+
 /*
  * Everything a message says, not only its text. A bot's message often carries
  * its words in attachments - a build result, a link preview, a forwarded
@@ -1121,10 +1288,7 @@ function matcherOf(groups) {
  * beside it.
  */
 function spokenIn(one) {
-  const parts = [at(one, 'text')];
-  for (const attached of at(one, 'attachments') ?? []) {
-    parts.push(at(attached, 'title'), at(attached, 'pretext'), at(attached, 'text'), at(attached, 'fallback'));
-  }
+  const parts = [cardOf(one)];
   for (const file of at(one, 'files') ?? []) {
     parts.push(at(file, 'title'), at(file, 'name'));
   }
@@ -2307,6 +2471,7 @@ it notifies nobody else.`,
       }),
       new OrknuxFunctionTool({ function: 'toSlack' }),
       slackTool(fn('react')),
+      slackTool(fn('vote')),
       slackTool(fn('search')),
       new OrknuxFunctionTool({ function: 'findRecent' }),
       /*
@@ -2688,7 +2853,7 @@ it notifies nobody else.`,
               ts: ts,
               user: at(one, 'user') ?? at(one, 'username'),
               userName: null,
-              text: at(one, 'text'),
+              text: cardOf(one),
               replies: replies,
               repliers: at(one, 'reply_users_count'),
               started: whenOf(ts),
@@ -3097,6 +3262,57 @@ it notifies nobody else.`,
       }),
 
       new OrknuxFunction({
+        name: 'vote',
+        description:
+          'Votes in a Slack poll or quiz that is answered with emoji reactions - the kind that lists ' +
+          'its options as ":one: Pizza", ":two: Sushi". Pass the channel id, the poll message\'s own ' +
+          'ts, and the option: its words ("Sushi"), its number ("2"), or its emoji (":two:"); add ' +
+          'threadTs when the poll is a reply inside a thread. It reads the poll, finds the emoji for ' +
+          'that option and reacts with it, and answers the emoji. A poll whose options are buttons ' +
+          '("Buttons: [Vote]" in what the message says) cannot be voted in by any bot: Slack sends a ' +
+          'button press only to the app that posted the poll, from a person. This says so rather than ' +
+          'pretending - answer in the thread instead. Pass the connection the event came in on, or an ' +
+          'empty string to use the configured one. Needs reactions:write and the history scope.',
+        params: [
+          { name: 'connection', type: 'string' },
+          { name: 'channel', type: 'string' },
+          { name: 'ts', type: 'string' },
+          { name: 'option', type: 'string' },
+          { name: 'threadTs', type: 'string', required: false, default: '' },
+        ],
+        returnType: 'string',
+        run: (connection, channel, ts, option, threadTs) => {
+          const parent = typeof threadTs === 'string' && threadTs.length > 0 ? threadTs : ts;
+          /*
+           * Through the thread reader, which hands back a message's whole card:
+           * replies on any message's own ts answer that message first, so a
+           * poll outside a thread is read the same way as one inside.
+           */
+          const read = through((use) => orknux.slack.thread(use, channel, parent, 200), connection, this.settings.slack);
+          if (read.error !== undefined) {
+            throw new Error(`could not read the poll: ${read.error}`);
+          }
+          const poll = (at(read, 'messages') ?? []).find((one) => at(one, 'ts') === ts);
+          if (poll === undefined) {
+            throw new Error(`there is no message ${ts} in ${channel}${parent === ts ? '' : ` under thread ${parent}`}`);
+          }
+          const emoji = pollEmoji(String(at(poll, 'text') ?? ''), String(option ?? ''));
+          if (emoji.choice === null) {
+            throw new Error(emoji.why);
+          }
+          const done = through(
+            (use) => orknux.slack.react(use, channel, ts, emoji.choice),
+            connection,
+            this.settings.slack,
+          );
+          if (done.error !== undefined) {
+            throw new Error(`could not vote: ${done.error}`);
+          }
+          return `:${emoji.choice}:`;
+        },
+      }),
+
+      new OrknuxFunction({
         name: 'search',
         description:
           'Searches Slack messages the way the search box does. Slack\'s search syntax works: in:#channel, ' +
@@ -3261,7 +3477,7 @@ it notifies nobody else.`,
             if (NOISE.includes(at(one, 'subtype'))) {
               return;
             }
-            const text = at(one, 'text');
+            const text = cardOf(one);
             if (!answers(spokenIn(one))) {
               return;
             }

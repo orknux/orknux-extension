@@ -47,6 +47,7 @@ exception is `toSlack`, which reaches nothing and so is told nothing.
 |---|---|
 | `post(connection, channel, text, threadTs, attachments)` | The new message's `channel` and `ts`. An empty `threadTs` posts to the channel itself. `attachments` hangs files on the message and takes **either kind**: a permalink string for a file already on Slack, or a map for one that isn't there yet — `{filename, content}`, `{filename, base64}`, or `{url}` — which is uploaded first. See below. |
 | `react(connection, channel, ts, emoji)` | `true`. The emoji's short name, with or without colons. Already-reacted counts as done. |
+| `vote(connection, channel, ts, option, threadTs)` | **Votes in a reaction poll**: the option by its words, its number or its emoji; answers the emoji it reacted with. A button poll is refused in words — Slack lets only a person press another app's button. |
 | `mention(connection, name)` | The notation Slack renders as a ping — `<@U…>` for a person, `<!subteam^S…>` for a group — from a display name, username, email, id or group handle. Put the answer in a message as it is, and never write `<@…>` from a guessed id. |
 | `toSlack(markdown)` | The same text as mrkdwn — the conversion `post` does on the way out, on its own, for text going somewhere else. Takes no `connection`, reaches nothing, sends nothing. |
 
@@ -430,6 +431,7 @@ nothing else. Slack itself is never reached that way.
 | `findChannels` | `channels:read`, plus `groups:read` for private ones |
 | `findUsers` | `users:read`, plus `users:read.email` for addresses |
 | `channelMembers` | `channels:read` (`groups:read` for a private channel) and `users:read` |
+| `vote` | `reactions:write`, plus the conversation's history scope |
 
 ## Two caveats worth knowing before you debug them
 
