@@ -769,6 +769,7 @@ test('the slack plugin declares what the server would accept', async () => {
       'findChannels',
       'listThreads',
       'findUsers',
+      'channelMembers',
       'readThread',
       'post',
       'toSlack',
@@ -797,6 +798,7 @@ test('the slack plugin declares what the server would accept', async () => {
       'readMessage',
       'whoIs',
       'findUsers',
+      'channelMembers',
       'findChannels',
       'listThreads',
       'mention',
@@ -5336,4 +5338,95 @@ test('an upload with a comment or a thread and no channel is refused, not shared
   } finally {
     globalThis.orknux.session.store = store;
   }
+});
+
+test('slack lists who is in a channel, by name or id, with their names', async () => {
+  const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
+  const { default: Slack } = await import(url.href);
+
+  const plugin = Object.create(Slack.prototype);
+  Object.defineProperty(plugin, 'settings', { value: Object.freeze({ slack: { id: 7, type: 'SLACK' } }) });
+  const call = (name) => plugin.functions().find((one) => one.name === name);
+
+  const people = {
+    U1: { id: 'U1', name: 'ada', profile: { real_name: 'Ada Lovelace', display_name: 'Ada' } },
+    U2: { id: 'U2', name: 'bob', profile: { real_name: 'Bob Adams', display_name: '' } },
+    B1: { id: 'B1', name: 'deploybot', is_bot: true, profile: { real_name: 'Deploy Bot' } },
+  };
+  const asked = [];
+  const door = globalThis.orknux.slack.api;
+  const lookup = globalThis.orknux.slack.user;
+  let byName;
+  let byId;
+  let bare;
+  let missing;
+  let hidden;
+  try {
+    globalThis.orknux.slack.user = (_connection, id) => {
+      const one = people[id];
+      return one === undefined
+        ? { error: 'user_not_found' }
+        : { id: one.id, name: one.name, realName: one.profile.real_name, displayName: one.profile.display_name || null, bot: one.is_bot === true };
+    };
+    globalThis.orknux.slack.api = slackApiFrom((what) => {
+      asked.push(what);
+      if (what.method === 'users.conversations') {
+        return { ok: true, channels: [{ id: 'C1', name: 'deploys' }], response_metadata: { next_cursor: '' } };
+      }
+      if (what.method === 'conversations.list') {
+        return { ok: true, channels: [{ id: 'C2', name: 'random' }], response_metadata: { next_cursor: '' } };
+      }
+      if (what.method === 'conversations.members') {
+        if (what.args.channel === 'C9') return { ok: false, error: 'channel_not_found' };
+        return what.args.cursor === 'MORE'
+          ? { ok: true, members: ['B1'], response_metadata: { next_cursor: '' } }
+          : { ok: true, members: ['U1', 'U2'], response_metadata: { next_cursor: 'MORE' } };
+      }
+      return { ok: false, error: `unexpected ${what.method}` };
+    });
+
+    byName = call('channelMembers').run('#deploys', 100, true);
+    byId = call('channelMembers').run('<#C2|random>', 2, true);
+    bare = call('channelMembers').run('C1', 100, false);
+    missing = (() => {
+      try {
+        call('channelMembers').run('nowhere', 100, true);
+        return null;
+      } catch (thrown) {
+        return thrown.message;
+      }
+    })();
+    hidden = (() => {
+      try {
+        call('channelMembers').run('C9', 100, true);
+        return null;
+      } catch (thrown) {
+        return thrown.message;
+      }
+    })();
+  } finally {
+    globalThis.orknux.slack.api = door;
+    globalThis.orknux.slack.user = lookup;
+  }
+
+  /* Every page of members is read, and each is named. */
+  assert.equal(byName.channel, 'C1');
+  assert.deepEqual(byName.members.map((one) => one.id), ['U1', 'U2', 'B1']);
+  assert.deepEqual(byName.members.map((one) => one.realName), ['Ada Lovelace', 'Bob Adams', 'Deploy Bot']);
+  assert.equal(byName.members[2].bot, true);
+  assert.equal(byName.total, 3);
+  assert.equal(byName.complete, true);
+
+  /* An id, even as Slack writes one into a message, is used as it is; limit caps the people, not the total. */
+  assert.equal(byId.channel, 'C2');
+  assert.deepEqual(byId.members.map((one) => one.id), ['U1', 'U2']);
+  assert.equal(byId.total, 3);
+
+  /* Without names, nobody is looked up. */
+  assert.deepEqual(bare.members.map((one) => one.id), ['U1', 'U2', 'B1']);
+  assert.equal(bare.members[0].realName, null);
+
+  /* A name nobody has, and a channel Slack will not show, are said in words. */
+  assert.match(missing, /no channel called #nowhere/);
+  assert.match(hidden, /needs the bot invited/);
 });

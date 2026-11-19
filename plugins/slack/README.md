@@ -35,6 +35,7 @@ exception is `toSlack`, which reaches nothing and so is told nothing.
 | `findChannels(query, limit, withArchived)` | Channels by name, topic or purpose — with `member` saying whether the bot is in it, which decides what else you can do with it. An empty query lists what is there. |
 | `listThreads(channel, days, limit, withNames)` | The threads in one channel, newest activity first: what each is about, how many replied, and the `ts` `readThread` takes. |
 | `findUsers(query, limit)` | People by **name or email**, for turning "the person called Ada" into the `U…` id everything else takes. An email is one exact request; a name reads the directory. Runs on the connection's bot token. |
+| `channelMembers(channel, limit, withNames)` | **Who is in a channel**, as ids with names: by name, `#name` or id. A public channel answers whether or not the bot is in it; a private one only where it was invited. `total` says how many the channel holds. |
 | `whoIs(connection, userId)` | Who an id belongs to: `id`, `name`, `realName`, `displayName`, `bot`. Takes the id bare or as the whole `<@U…>` notation a message carries it in. |
 | `search(connection, query, limit)` | `matches` — `channel`, `channelName`, `ts`, `user`, `text`, `permalink` each — and `total`, how many the whole search holds. Slack's search syntax works: `in:#channel`, `from:@name`, `"an exact phrase"`. |
 | `findRecent(query, channel, days, limit, withNames, pages, cursor, threads, skipDays)` | `matches` in the same shape, newest first, by **reading history with the bot token** and searching it — for a workspace with no user token to search with. Nearly full text: diacritics and capitals ignored, a word matched in any of its forms by its stem, `"a phrase"`, `OR`, `-word`, and attachments, link previews and file names searched with the text. Plus how much was read and whether the window was whole. With one channel named it reads five pages of 200 (up to twenty), opens threads to search their replies (up to thirty, a match says its `threadTs`), and answers `nextCursor` where there is more - older history, or threads it had no room to open - with `incompleteBecause` saying which: pass it back as `cursor` to carry on, piece by piece, to the end of the window. A window is a year long at most, and `skipDays` moves it back, so older history is searched a window at a time. Takes no `connection`: it reads through the configured `slack` one. |
@@ -428,6 +429,7 @@ nothing else. Slack itself is never reached that way.
 | `findRecent`, `listThreads` | `channels:history`, `channels:read` on the bot token — plus `groups:*` for private ones |
 | `findChannels` | `channels:read`, plus `groups:read` for private ones |
 | `findUsers` | `users:read`, plus `users:read.email` for addresses |
+| `channelMembers` | `channels:read` (`groups:read` for a private channel) and `users:read` |
 
 ## Two caveats worth knowing before you debug them
 

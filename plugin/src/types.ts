@@ -1157,7 +1157,8 @@ export interface OrknuxHelpers {
      * wrote it. Needs `SLACK_WEB_API_READ`, and whatever scope Slack wants for
      * the method. Reads only: `auth.test`, `conversations.list`,
      * `users.conversations`, `conversations.history`, `conversations.replies`,
-     * `users.list`, `users.lookupByEmail` and `files.info`; anything else is
+     * `conversations.members`, `users.list`, `users.lookupByEmail` and
+     * `files.info`; anything else is
      * refused, naming those. Arguments go by Slack's own names, as strings,
      * numbers or booleans; a `token` among them is ignored.
      */
@@ -1169,6 +1170,7 @@ export interface OrknuxHelpers {
         | 'users.conversations'
         | 'conversations.history'
         | 'conversations.replies'
+        | 'conversations.members'
         | 'users.list'
         | 'users.lookupByEmail'
         | 'files.info',

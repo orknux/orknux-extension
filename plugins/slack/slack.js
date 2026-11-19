@@ -1442,6 +1442,21 @@ export default class Slack extends OrknuxPlugin {
       }),
 
       new OrknuxObject({
+        name: 'ChannelMembers',
+        description: 'Who is in one channel.',
+        properties: [
+          { name: 'channel', kind: 'string', description: 'The channel id, resolved if a name was passed.' },
+          { name: 'members', kind: 'array', of: 'User', description: 'Capped by limit. Without withNames, ids alone.' },
+          { name: 'total', kind: 'number', description: 'How many members were read, before limit.' },
+          {
+            name: 'complete',
+            kind: 'boolean',
+            description: 'Every member was read. False means a very large channel ran past the page cap.',
+          },
+        ],
+      }),
+
+      new OrknuxObject({
         name: 'FoundUsers',
         description: 'What looking for people came to.',
         properties: [
@@ -2243,6 +2258,7 @@ it notifies nobody else.`,
       slackTool(fn('readMessage')),
       slackTool(fn('whoIs')),
       new OrknuxFunctionTool({ function: 'findUsers' }),
+      new OrknuxFunctionTool({ function: 'channelMembers' }),
       new OrknuxFunctionTool({ function: 'findChannels' }),
       new OrknuxFunctionTool({ function: 'listThreads' }),
       slackTool(fn('mention')),
@@ -2799,6 +2815,131 @@ it notifies nobody else.`,
             users: matches.slice(0, capped),
             total: matches.length,
             read: read,
+            complete: complete,
+          };
+        },
+      }),
+
+      new OrknuxFunction({
+        name: 'channelMembers',
+        description:
+          'Who is in a channel: its members, each with the U… id every other call here takes and ' +
+          'their name. Pass the channel as a name, a #name or an id - a public channel answers ' +
+          'whether or not the bot is in it, a private one only where the bot was invited. limit ' +
+          'caps how many people come back; total is how many the channel holds, and complete ' +
+          'false means a very large channel ran past the page cap. Names cost a request each for ' +
+          'a short list and one read of the directory for a long one; withNames false answers ' +
+          'the ids alone. Apps in the channel are members too, marked bot. Runs on the bot token ' +
+          'and needs channels:read (groups:read for a private channel) and users:read.',
+        params: [
+          { name: 'channel', type: 'string' },
+          { name: 'limit', type: 'number', required: false, default: 100 },
+          { name: 'withNames', type: 'boolean', required: false, default: true },
+        ],
+        returnType: 'ChannelMembers',
+        run: (channel, limit, withNames) => {
+          /* A name, a #name, an id, or the <#C…|name> Slack writes into a message. */
+          const asked =
+            typeof channel === 'string'
+              ? channel.trim().replace(/^<#/, '').replace(/>$/, '').split('|')[0].replace(/^#/, '')
+              : '';
+          if (asked.length === 0) {
+            throw new Error('there is no channel to look in');
+          }
+          const capped = Math.min(Math.max(Math.trunc(limit), 1), 1000);
+
+          /*
+           * An id is used as it is. A name is looked for among the bot's own
+           * channels first, which is one short listing, and in the directory
+           * only after - the way findChannels does it.
+           */
+          // Slack names a channel in lower case only, so a capital C or G and capitals after it is an id.
+          let id = /^[CG][A-Z0-9]+$/.test(asked) ? asked : null;
+          if (id === null) {
+            const mine = joined(this.settings).find((one) => at(one, 'name') === asked);
+            if (mine !== undefined) {
+              id = at(mine, 'id');
+            } else {
+              const directory = pagesOf(
+                this.settings,
+                'conversations.list',
+                { types: 'public_channel,private_channel', exclude_archived: 'true', limit: '1000' },
+                DIRECTORY,
+              );
+              const found = directory.items.find((one) => at(one, 'name') === asked);
+              if (found === undefined) {
+                throw new Error(
+                  `there is no channel called #${asked} that the bot can see` +
+                    (directory.complete ? '' : ' among the channels read - pass its id instead') +
+                    '; a private channel is seen only once the bot is invited to it',
+                );
+              }
+              id = at(found, 'id');
+            }
+          }
+
+          const ids = [];
+          let cursor = '';
+          let complete = false;
+          for (let page = 0; page < DIRECTORY; page += 1) {
+            let listed;
+            try {
+              listed = readSlack(this.settings, 'conversations.members', { channel: id, limit: '1000', cursor: cursor });
+            } catch (thrown) {
+              if (/channel_not_found/.test(thrown.message)) {
+                throw new Error(
+                  `Slack has no channel ${channel} that the bot can see - a private channel needs the bot invited to it`,
+                );
+              }
+              throw thrown;
+            }
+            for (const one of at(listed, 'members') ?? []) {
+              ids.push(one);
+            }
+            cursor = at(at(listed, 'response_metadata'), 'next_cursor') ?? '';
+            if (typeof cursor !== 'string' || cursor.length === 0) {
+              complete = true;
+              break;
+            }
+          }
+
+          const shown = ids.slice(0, capped);
+          const bare = (one) => ({ id: one, name: null, realName: null, displayName: null, email: null, bot: false });
+          if (withNames === false) {
+            return { channel: id, members: shown.map(bare), total: ids.length, complete: complete };
+          }
+
+          /*
+           * A short list is named one request a person; a long one by reading
+           * the directory once and picking them out of it, which is a request
+           * per two hundred accounts instead of one per member. Somebody the
+           * directory's cap did not reach keeps their id and no name.
+           */
+          const known = new Map();
+          if (shown.length <= NAMED) {
+            for (const one of shown) {
+              /* The door whoIs goes through, which answers the User shape itself. */
+              const found = through((use) => orknux.slack.user(use, one), '', this.settings.slack);
+              if (found.error === undefined) known.set(one, { ...found, email: at(found, 'email') ?? null });
+              else orknux.log.warn(`could not name ${one}: ${found.error}`);
+            }
+          } else {
+            const wanted = new Set(shown);
+            let after = '';
+            for (let page = 0; page < DIRECTORY && known.size < wanted.size; page += 1) {
+              const listed = readSlack(this.settings, 'users.list', { limit: '200', cursor: after });
+              for (const member of at(listed, 'members') ?? []) {
+                const person = userOf(member);
+                if (wanted.has(person.id)) known.set(person.id, person);
+              }
+              after = at(at(listed, 'response_metadata'), 'next_cursor') ?? '';
+              if (typeof after !== 'string' || after.length === 0) break;
+            }
+          }
+          return {
+            channel: id,
+            members: shown.map((one) => known.get(one) ?? bare(one)),
+            total: ids.length,
             complete: complete,
           };
         },
