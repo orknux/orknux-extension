@@ -774,7 +774,6 @@ test('the slack plugin declares what the server would accept', async () => {
       'post',
       'toSlack',
       'react',
-      'vote',
       'search',
       'findRecent',
       'mention',
@@ -807,7 +806,6 @@ test('the slack plugin declares what the server would accept', async () => {
       'post',
       'toSlack',
       'react',
-      'vote',
       'search',
       'findRecent',
       'upload',
@@ -876,7 +874,7 @@ test('the slack plugin declares what the server would accept', async () => {
      * optional, so the server can show a model which Slacks it holds; the
      * function behind keeps its text connection first for workflows.
      */
-    if (['readMessage', 'whoIs', 'mention', 'readThread', 'react', 'vote', 'search'].includes(declared.name)) {
+    if (['readMessage', 'whoIs', 'mention', 'readThread', 'react', 'search'].includes(declared.name)) {
       assert.equal(declared.proxyOf, null, `the agents' ${declared.name} is its own tool`);
       const behind = inspected.functions.find((one) => one.name === declared.name);
       const last = declared.params.at(-1);
@@ -5434,7 +5432,7 @@ test('slack lists who is in a channel, by name or id, with their names', async (
   assert.match(hidden, /needs the bot invited/);
 });
 
-test('slack reads an alert card as what it says, and votes in a reaction poll', async () => {
+test('slack reads an alert card as what it says', async () => {
   const url = new URL(`../../plugins/slack/slack.js`, import.meta.url);
   const { default: Slack } = await import(url.href);
 
@@ -5469,12 +5467,7 @@ test('slack reads an alert card as what it says, and votes in a reaction poll', 
     ],
   };
   const door = globalThis.orknux.slack.api;
-  const thread = globalThis.orknux.slack.thread;
-  const react = globalThis.orknux.slack.react;
-  const reacted = [];
   let threads;
-  const failures = {};
-  const votes = {};
   try {
     globalThis.orknux.slack.api = slackApiFrom((what) => {
       if (what.method === 'auth.test') return { ok: true, url: 'https://acme.slack.com/' };
@@ -5484,41 +5477,14 @@ test('slack reads an alert card as what it says, and votes in a reaction poll', 
     });
     threads = call('listThreads').run('C1', 7, 20, false);
 
-    /* What the server's thread reader answers: the poll's card already said as text. */
-    const polls = {
-      '1.1': 'Lunch?\n\n:one: Pizza\n:two: Sushi\n:three: Pierogi',
-      '2.2': 'Lunch?\n\n:one: Pizza\nButtons: [Vote]\n:two: Sushi\nButtons: [Vote]',
-      '3.3': 'Capital of France?\n\nButtons: [Paris] [Rome]',
-    };
-    globalThis.orknux.slack.thread = (_connection, _channel, ts) => ({ messages: [{ ts, text: polls[ts] }], replies: 0 });
-    globalThis.orknux.slack.react = (_connection, channel, ts, emoji) => {
-      reacted.push([channel, ts, emoji]);
-      return { ok: true };
-    };
-    votes.words = call('vote').run('', 'C1', '1.1', 'sushi', '');
-    votes.number = call('vote').run('', 'C1', '1.1', '3', '');
-    votes.emoji = call('vote').run('', 'C1', '1.1', ':one:', '');
-    for (const [name, ts, option] of [['buttons', '3.3', 'Paris'], ['nothing', '1.1', 'Ramen']]) {
-      try {
-        call('vote').run('', 'C1', ts, option, '');
-      } catch (thrown) {
-        failures[name] = thrown.message;
-      }
-    }
   } finally {
     globalThis.orknux.slack.api = door;
-    globalThis.orknux.slack.thread = thread;
-    globalThis.orknux.slack.react = react;
   }
 
   assert.equal(
     threads.threads[0].text,
     '*#4211: Disk full on db-1* (https://acme.app.opsgenie.com/alert/detail/abc)\nPriority: P1\nButtons: [Acknowledge] [Close]',
   );
-  assert.deepEqual(votes, { words: ':two:', number: ':three:', emoji: ':one:' });
-  assert.deepEqual(reacted, [['C1', '1.1', 'two'], ['C1', '1.1', 'three'], ['C1', '1.1', 'one']]);
-  assert.match(failures.buttons, /no bot can press one/);
-  assert.match(failures.nothing, /no option of this poll matches "Ramen"/);
 });
 
 test('the kafka plugin declares what the server would accept', async () => {
