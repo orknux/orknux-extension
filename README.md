@@ -82,6 +82,12 @@ running system is doing.
 
     https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/prometheus/prometheus.js
 
+**[kafka](plugins/kafka/kafka.js)** reads a Kafka cluster's metadata - its
+brokers, topics, partitions and offsets, and each consumer group's lag - through
+the server's own Kafka client, never a record. Needs Orknux 1.4.7 or later.
+
+    https://raw.githubusercontent.com/michjak-szymanski/orknux-extension/main/plugins/kafka/kafka.js
+
 Each folder holds the plugin, its `plugin.json` marketplace manifest, the
 `README.md` that manifest names and the two icons — one file each, as the
 server loads them.

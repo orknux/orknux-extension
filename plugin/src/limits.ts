@@ -305,4 +305,5 @@ export const CAPABILITIES = [
   'NETWORK_REQUEST',
   'RENDER_PNG',
   'RENDER_PDF',
+  'KAFKA_READ_METADATA',
 ] as const;

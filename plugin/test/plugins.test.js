@@ -4714,6 +4714,7 @@ test('the sweeps below are sweeping something', () => {
     'github',
     'jenkins',
     'jira',
+    'kafka',
     'musescore',
     'prometheus',
     'slack',
@@ -5518,4 +5519,75 @@ test('slack reads an alert card as what it says, and votes in a reaction poll', 
   assert.deepEqual(reacted, [['C1', '1.1', 'two'], ['C1', '1.1', 'three'], ['C1', '1.1', 'one']]);
   assert.match(failures.buttons, /no bot can press one/);
   assert.match(failures.nothing, /no option of this poll matches "Ramen"/);
+});
+
+test('the kafka plugin declares what the server would accept', async () => {
+  const inspected = await inspect(shipped('kafka'));
+
+  assert.equal(inspected.id, 'kafka');
+  assert.deepEqual(validate(inspected), []);
+  assert.deepEqual(inspected.connectionTypes.map((kind) => kind.name), ['kafka']);
+  assert.deepEqual(inspected.parameters, []);
+  /* Metadata only: the one capability, and no request door - Kafka is not HTTP. */
+  assert.deepEqual(inspected.permissions, []);
+  assert.deepEqual(inspected.capabilities, ['KAFKA_READ_METADATA']);
+  const names = ['cluster', 'listTopics', 'describeTopic', 'listGroups', 'describeGroup'];
+  assert.deepEqual(inspected.functions.map((declared) => declared.name), names);
+  assert.deepEqual(inspected.tools.map((declared) => declared.name), names);
+  for (const declared of inspected.functions) {
+    assert.deepEqual(
+      [declared.params[0].name, declared.params[0].type],
+      ['kafka', 'connection'],
+      `${declared.name} takes the cluster first`,
+    );
+  }
+});
+
+test('kafka asks the server door the question each call is, and says its refusals', async () => {
+  const url = new URL(`../../plugins/kafka/kafka.js`, import.meta.url);
+  const { default: Kafka } = await import(url.href);
+  const plugin = Object.create(Kafka.prototype);
+  const functions = plugin.functions();
+  const call = (name) => functions.find((one) => one.name === name);
+  const production = { id: 4, type: 'HTTP', pluginType: 'kafka/kafka', url: 'kafka-1:9092', authType: 'NONE', headers: {} };
+
+  const asked = [];
+  const door = globalThis.orknux.kafka;
+  let answers;
+  let check;
+  try {
+    globalThis.orknux.kafka = {
+      metadata: (connection, what, args) => {
+        asked.push({ connection: connection.id ?? connection, what, args });
+        if (what === 'topic' && args.name === 'nope') return { error: 'there is no topic called nope' };
+        if (what === 'cluster') return { clusterId: 'abc', controller: null, brokers: [{ id: 1 }, { id: 2 }] };
+        return { what };
+      },
+    };
+    answers = [
+      call('cluster').run(production),
+      call('listTopics').run(production, 'orders', true, 9999),
+      call('describeTopic').run(production, ' orders '),
+      call('listGroups').run(7, '', 0),
+      call('describeGroup').run(production, 'billing'),
+    ];
+    check = plugin.connectionTypes()[0].check(production);
+    assert.throws(() => call('describeTopic').run(production, 'nope'), /there is no topic called nope/);
+  } finally {
+    globalThis.orknux.kafka = door;
+  }
+
+  assert.equal(answers[0].clusterId, 'abc');
+  assert.deepEqual(asked.slice(0, 5), [
+    { connection: 4, what: 'cluster', args: {} },
+    { connection: 4, what: 'topics', args: { query: 'orders', internal: true, limit: 500 } },
+    { connection: 4, what: 'topic', args: { name: 'orders' } },
+    { connection: 7, what: 'groups', args: { query: '', limit: 100 } },
+    { connection: 4, what: 'group', args: { name: 'billing' } },
+  ]);
+  assert.deepEqual(check, { ok: true, message: 'Cluster abc, 2 brokers' });
+
+  assert.throws(() => call('cluster').run(null), /no Kafka connection was given/);
+  assert.throws(() => call('describeTopic').run(production, '  '), /which topic\?/);
+  assert.throws(() => call('describeGroup').run(production, ''), /which consumer group\?/);
 });

@@ -523,6 +523,12 @@ function ungrantedHelpers(): OrknuxHelpers {
         error: 'there is no renderer here: only a call made inside the sandbox can read one',
       }),
     },
+    /* No cluster to ask outside the server, said as the server's own doors say a refusal. */
+    kafka: {
+      metadata: (): { error: string } => ({
+        error: 'there is no Kafka here: only a call made inside the sandbox can read a cluster',
+      }),
+    },
     log: {
       debug: say('debug'),
       info: say('info'),

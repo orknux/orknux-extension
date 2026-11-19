@@ -50,7 +50,8 @@ type OrknuxCapability =
   | 'SLACK_WEB_API_READ'
   | 'NETWORK_REQUEST'
   | 'RENDER_PNG'
-  | 'RENDER_PDF';
+  | 'RENDER_PDF'
+  | 'KAFKA_READ_METADATA';
 
 /** The kinds of connection a workspace can hold. */
 type ConnectionType = 'SLACK' | 'SMTP' | 'HTTP';
@@ -834,6 +835,23 @@ declare const orknux: {
      * the sentence, and a range is the way through.
      */
     htmlFromPdf(pdf: string, from?: number, to?: number): OrknuxPdfHtml;
+  };
+
+  kafka: {
+    /**
+     * Reads a Kafka cluster's metadata through a Kafka connection of the run's
+     * workspace - never a record. `cluster` answers the brokers; `topics` the
+     * topics (`query` words, `internal`, `limit`); `topic` one topic's
+     * partitions, offsets and settings (`name`); `groups` the consumer groups
+     * (`query`, `limit`); `group` one group's members and lag (`name`).
+     *
+     * Needs the `KAFKA_READ_METADATA` capability. A refusal is `{ error }`, in words.
+     */
+    metadata(
+      connection: OrknuxConnection<ConnectionType> | number | string,
+      what: 'cluster' | 'topics' | 'topic' | 'groups' | 'group',
+      args?: { name?: string; query?: string; limit?: number; internal?: boolean },
+    ): Record<string, unknown> & { error?: string };
   };
 
   log: {

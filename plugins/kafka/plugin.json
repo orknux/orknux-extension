@@ -1,0 +1,16 @@
+{
+  "$schema": "https://orknux.ai/marketplace/plugin.schema.json",
+  "key": "kafka",
+  "name": "Kafka",
+  "author": "Orknux",
+  "tags": [
+    "kafka",
+    "streaming",
+    "messaging",
+    "observability"
+  ],
+  "summary": "Read a Kafka cluster's topics, partitions and consumer lag.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "descriptionPath": "README.md"
+}

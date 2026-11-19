@@ -1454,6 +1454,22 @@ export interface OrknuxHelpers {
   };
 
   /**
+   * A Kafka cluster's metadata, through a Kafka connection of the run's
+   * workspace — never a record. `cluster` answers the brokers; `topics` the
+   * topics (`query` words, `internal`, `limit`); `topic` one topic's
+   * partitions, offsets and settings (`name`); `groups` the consumer groups
+   * (`query`, `limit`); `group` one group's members and lag (`name`). Needs
+   * `KAFKA_READ_METADATA`; a refusal is `{ error }`, in words.
+   */
+  kafka: {
+    metadata(
+      connection: { id: number | string } | number | string,
+      what: 'cluster' | 'topics' | 'topic' | 'groups' | 'group',
+      args?: { name?: string; query?: string; limit?: number; internal?: boolean },
+    ): Record<string, unknown> & { error?: string };
+  };
+
+  /**
    * Not a capability, and never needed granting — nothing is reached by it. The
    * line crosses as text and the server decides where it goes; a level below
    * the installation's threshold costs one comparison and is dropped where it

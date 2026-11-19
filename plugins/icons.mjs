@@ -71,6 +71,7 @@ const BRANDED = [
   { plugin: 'confluence', from: 'simple', icon: 'siConfluence' },
   { plugin: 'jira', from: 'simple', icon: 'siJira' },
   { plugin: 'jenkins', from: 'simple', icon: 'siJenkins' },
+  { plugin: 'kafka', from: 'simple', icon: 'siApachekafka' },
   { plugin: 'prometheus', from: 'simple', icon: 'siPrometheus' },
   { plugin: 'slack', from: 'brands', icon: 'faSlack' },
   { plugin: 'teams', from: 'brands', icon: 'faMicrosoft' },
